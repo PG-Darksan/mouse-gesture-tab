@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Gesture test page</title>
+<style>
+  html, body { margin: 0; height: 100%; font: 16px/1.6 system-ui, sans-serif; background: #f7f9fa; color: #223; }
+  main { padding: 24px 32px; }
+  .box { margin-top: 16px; padding: 16px; background: #fff; border: 1px solid #d8e1e4; border-radius: 10px; height: 420px; }
+  #fs { width: 640px; height: 300px; background: #dfeff2; }
+</style>
+<script>
+  // ページ側から見えたコンテキストメニュー (拡張機能が抑制した物は届かない)
+  window.__menus = [];
+  addEventListener('contextmenu', (e) => { window.__menus.push({ x: e.clientX, y: e.clientY, prevented: e.defaultPrevented }); });
+</script>
+</head>
+<body>
+<main>
+  <h1>マウスジェスチャーの試験ページ</h1>
+  <p>右ボタンを押したまま動かして離すと、割り当てた操作を実行します。 <a href="#x">リンク</a></p>
+  <div class="box" id="box">ここで描きます。 <input id="text" value="入力欄"></div>
+  <div id="fs">全画面にする要素</div>
+</main>
+</body>
+</html>

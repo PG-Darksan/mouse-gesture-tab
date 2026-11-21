@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>マウスジェスチャー・タブ操作</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body data-size="medium">
+  <div class="app">
+    <header class="head">
+      <img class="logo" src="icons/icon48.png" alt="" width="36" height="36">
+      <div class="head-text">
+        <h1 data-i18n="extName">マウスジェスチャー・タブ操作</h1>
+        <p class="subtitle" data-i18n="popup.subtitle">右ボタンを押したまま上下左右に動かし、離した時に1回実行します。</p>
+      </div>
+    </header>
+
+    <section class="card status" aria-labelledby="statusLabel">
+      <h2 id="statusLabel" class="visually-hidden" data-i18n="status.label">現在のページ</h2>
+      <div class="status-main" id="statusBox" data-tone="busy">
+        <span class="status-dot" aria-hidden="true"></span>
+        <p id="statusText" role="status" aria-live="polite">確認中…</p>
+      </div>
+      <div class="status-actions">
+        <button type="button" id="allowSite" class="primary" hidden data-i18n="button.allowSite">このサイトを許可</button>
+        <button type="button" id="siteSettings" data-i18n="button.siteSettings" data-i18n-title="button.siteSettings.tip">許可設定</button>
+        <button type="button" id="recheck" data-i18n="button.recheck" data-i18n-title="button.recheck.tip">再確認</button>
+      </div>
+    </section>
+
+    <section class="switches" aria-label="基本設定" data-i18n-label="section.basic">
+      <label class="switch" data-i18n-title="switch.enabled.tip">
+        <input type="checkbox" id="enabled" role="switch">
+        <span class="track" aria-hidden="true"></span>
+        <span class="switch-label" data-i18n="switch.enabled">有効</span>
+      </label>
+      <label class="switch" data-i18n-title="switch.wrapTabs.tip">
+        <input type="checkbox" id="wrapTabs" role="switch">
+        <span class="track" aria-hidden="true"></span>
+        <span class="switch-label" data-i18n="switch.wrapTabs">タブを循環</span>
+      </label>
+      <label class="switch" data-i18n-title="switch.showTrail.tip">
+        <input type="checkbox" id="showTrail" role="switch">
+        <span class="track" aria-hidden="true"></span>
+        <span class="switch-label" data-i18n="switch.showTrail">軌跡</span>
+      </label>
+      <label class="switch" data-i18n-title="switch.showFeedback.tip">
+        <input type="checkbox" id="showFeedback" role="switch">
+        <span class="track" aria-hidden="true"></span>
+        <span class="switch-label" data-i18n="switch.showFeedback">操作ガイド</span>
+      </label>
+    </section>
+
+    <section class="selects">
+      <label class="field" for="textSize">
+        <span data-i18n="textSize">文字サイズ</span>
+        <select id="textSize">
+          <option value="small">小</option>
+          <option value="medium">標準</option>
+          <option value="large">大</option>
+        </select>
+      </label>
+      <label class="field" for="language">
+        <span data-i18n="language">言語</span>
+        <select id="language">
+          <option value="auto">自動</option>
+          <option value="ja">日本語</option>
+          <option value="en">English</option>
+        </select>
+      </label>
+    </section>
+
+    <section class="mapping" aria-labelledby="mappingTitle">
+      <div class="mapping-head">
+        <h2 id="mappingTitle" data-i18n="mapping.title">形と操作の割り当て</h2>
+        <span class="note" data-i18n="mapping.note">全12種類</span>
+      </div>
+      <ul class="mapping-list" id="mappingList"></ul>
+    </section>
+
+    <div class="save">
+      <div class="save-row">
+        <span id="saveStatus" role="status" aria-live="polite" data-state="loading">読み込み中…</span>
+        <button type="button" id="retrySave" hidden data-i18n="save.retry">再試行</button>
+      </div>
+      <div class="load-error" id="loadError" role="alert" hidden>
+        <span data-i18n="load.failed">設定を読み込めませんでした</span>
+        <button type="button" id="reloadSettings" data-i18n="load.retry">再読み込み</button>
+      </div>
+      <p class="hint" data-i18n="hint">小さな手ぶれは自動で補正し、短い線でも認識します。曲がるのは1回までです。</p>
+    </div>
+
+    <footer class="foot">
+      <a id="footerLink" href="https://hisator-notebook.com/" target="_blank" rel="noopener noreferrer">Hisator Notebook <span class="ext">↗</span></a>
+    </footer>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="i18n.js"></script>
+  <script src="gesture-shape.js"></script>
+  <script src="popup-logic.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

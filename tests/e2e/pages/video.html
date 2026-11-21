@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Video test page</title>
+<style>
+  html, body { margin: 0; background: #111; color: #eee; font: 15px system-ui, sans-serif; }
+  video { display: block; width: 960px; height: 540px; margin: 24px; background: #234; }
+</style>
+<script>
+  window.__menus = [];
+  addEventListener('contextmenu', (e) => { window.__menus.push({ x: e.clientX, y: e.clientY }); });
+</script>
+</head>
+<body>
+<video id="v" muted playsinline></video>
+<script>
+  // 動画プレイヤーの多くと同じく、 押下時に preventDefault して互換 mousedown / mouseup を止める
+  const v = document.getElementById('v');
+  v.addEventListener('pointerdown', (e) => e.preventDefault());
+  window.__mouse = { down: 0, up: 0 };
+  v.addEventListener('mousedown', () => window.__mouse.down++);
+  v.addEventListener('mouseup', () => window.__mouse.up++);
+  // 映像の代わりに canvas の映像を流す
+  const c = document.createElement('canvas');
+  c.width = 320; c.height = 180;
+  const g = c.getContext('2d');
+  let n = 0;
+  setInterval(() => { g.fillStyle = `hsl(${(n += 7) % 360} 50% 35%)`; g.fillRect(0, 0, 320, 180); g.fillStyle = '#fff'; g.font = '28px sans-serif'; g.fillText('VIDEO ' + n, 20, 100); }, 100);
+  try { v.srcObject = c.captureStream(10); v.play().catch(() => {}); } catch (_) {}
+</script>
+</body>
+</html>

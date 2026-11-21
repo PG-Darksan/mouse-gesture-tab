@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Build artifacts
+dist/
+
+# E2E test outputs
+tests/e2e/last-run.json
+tests/e2e/screens/
+
+# OS / Editor / Logs
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+.env
+.env.*

@@ -1,0 +1,18 @@
+{
+  "extName": {
+    "message": "Mouse Gestures – Tab Control",
+    "description": "Extension name"
+  },
+  "extShortName": {
+    "message": "Gesture Tabs",
+    "description": "Short name"
+  },
+  "extDescription": {
+    "message": "Hold the right mouse button, move up, down, left or right, and release to switch, close or reload tabs and more.",
+    "description": "Description shown in the store and on the extensions page (max 132 characters)"
+  },
+  "actionTitle": {
+    "message": "Mouse gesture settings",
+    "description": "Tooltip of the toolbar button"
+  }
+}
