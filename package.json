@@ -1,15 +1,17 @@
 {
   "name": "mouse-gesture-tab",
-  "version": "3.5.0",
+  "version": "3.6.0",
   "private": true,
-  "description": "Windows の Chrome / Edge 向けマウスジェスチャー拡張機能 (Manifest V3)。 拡張機能本体は extension フォルダー。",
+  "description": "Windows の Chrome / Edge / Firefox 向けマウスジェスチャー拡張機能 (Manifest V3)。 拡張機能本体は extension フォルダー。",
   "scripts": {
     "test": "node --test \"tests/*.test.js\"",
     "test:e2e": "node tests/e2e/run-e2e.js",
     "test:e2e:edge": "node tests/e2e/run-e2e.js --edge",
     "icons": "node tools/render-icons.js",
     "store-assets": "node tools/store-assets.js",
-    "pack": "node tools/pack.js"
+    "pack": "node tools/pack.js",
+    "pack:firefox": "node tools/pack-firefox.cjs",
+    "pack:all": "node tools/pack.js && node tools/pack-firefox.cjs"
   },
   "engines": {
     "node": ">=20"

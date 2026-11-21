@@ -8,6 +8,13 @@
   const GESTURES = Object.freeze(['L', 'R', 'U', 'D', 'DR', 'DL', 'UR', 'UL', 'RU', 'RD', 'LU', 'LD']);
   const LEGACY_GESTURES = Object.freeze(['L', 'R', 'U', 'D', 'DR', 'DL', 'UR', 'UL']);
 
+  const SCROLL_ACTIONS = Object.freeze([
+    'scroll-up',
+    'scroll-down',
+    'scroll-left',
+    'scroll-right'
+  ]);
+
   const ACTIONS = Object.freeze([
     'none',
     'previous-tab',
@@ -21,7 +28,8 @@
     'go-back',
     'go-forward',
     'duplicate-tab',
-    'toggle-pin'
+    'toggle-pin',
+    ...SCROLL_ACTIONS
   ]);
 
   // 説明用の表示だけに使う。 OS へキーを送ることはしない。
@@ -38,7 +46,11 @@
     'go-back': 'Alt+←',
     'go-forward': 'Alt+→',
     'duplicate-tab': '',
-    'toggle-pin': ''
+    'toggle-pin': '',
+    'scroll-up': '',
+    'scroll-down': '',
+    'scroll-left': '',
+    'scroll-right': ''
   });
 
   const LANGUAGES = Object.freeze(['auto', 'ja', 'en']);
@@ -95,6 +107,10 @@
 
   function isAction(id) {
     return typeof id === 'string' && ACTIONS.includes(id);
+  }
+
+  function isScrollAction(id) {
+    return typeof id === 'string' && SCROLL_ACTIONS.includes(id);
   }
 
   function defaultSettings() {
@@ -233,6 +249,7 @@
     GESTURES,
     LEGACY_GESTURES,
     ACTIONS,
+    SCROLL_ACTIONS,
     SHORTCUTS,
     LANGUAGES,
     TEXT_SIZES,
@@ -243,6 +260,7 @@
     isObject,
     isGesture,
     isAction,
+    isScrollAction,
     defaultSettings,
     normalizeSettings,
     validateSettingsPatch,

@@ -19,6 +19,11 @@
   const REMOTE_GUARD_REFRESH_MS = 3000;
   const RELAY_INTERVAL_MS = 16;
   const RELAY_MAX_POINTS = 64;
+  const RELAY_CLOCK_SLOP_MS = 15;
+  const RELEASE_GRACE_MS = 80;
+  const OWN_RELEASE_QUIET_MS = 200;
+  const EXECUTE_RETRY_DELAYS = Object.freeze([80, 200]);
+  const SCROLL_RATIO = 0.8;
   const DISPLAY_REASONS = new Set([
     'unassigned',
     'single-tab',
@@ -105,6 +110,7 @@
     let popover = false;
     let gestureShown = false;
     let noticeShown = false;
+    let shield = false;
     let noticeTimer = null;
     let lastTrail = '';
     let lastGuide = '';
@@ -123,9 +129,25 @@
       return node;
     }
 
+    function hasOtherTopLayer() {
+      if (attempt(() => doc.querySelector(':modal'), null)) return true;
+      const list = attempt(() => doc.querySelectorAll(':popover-open'), null);
+      if (!list) return false;
+      for (const node of list) {
+        if (node !== host) return true;
+      }
+      return false;
+    }
+
+    function applyPointerEvents() {
+      if (!host) return;
+      host.style.setProperty('pointer-events', shield ? 'auto' : 'none', 'important');
+    }
+
     function build() {
       host = doc.createElementNS(XHTML_NS, 'mg-gesture-overlay');
       for (const [name, value] of HOST_STYLE) host.style.setProperty(name, value, 'important');
+      applyPointerEvents();
       const shadow = host.attachShadow({ mode: 'closed' });
       let styled = false;
       try {
@@ -162,8 +184,8 @@
 
     function attach() {
       const fs = attempt(() => doc.fullscreenElement, null);
-      const hasModal = !fs && !!attempt(() => doc.querySelector(':modal'), null);
-      popover = (!!fs && !canHostChildren(fs)) || hasModal;
+      const topLayer = !fs && hasOtherTopLayer();
+      popover = (!!fs && !canHostChildren(fs)) || topLayer;
       const parent = fs && !popover ? fs : doc.documentElement;
       if (!parent) return false;
       if (parent.namespaceURI === SVG_NS) {
@@ -182,6 +204,7 @@
       }
       if (popover) host.setAttribute('popover', 'manual');
       else host.removeAttribute('popover');
+      applyPointerEvents();
       parent.appendChild(host);
       if (popover && typeof host.showPopover === 'function') attempt(() => host.showPopover());
       return true;
@@ -190,10 +213,11 @@
     function ensure() {
       try {
         if (!host) build();
-        if (host.isConnected && !popover && !attempt(() => doc.fullscreenElement, null) && attempt(() => doc.querySelector(':modal'), null)) {
+        if (host.isConnected && !popover && !attempt(() => doc.fullscreenElement, null) && hasOtherTopLayer()) {
           detach();
         }
         if (!host.isConnected && !attach()) return false;
+        applyPointerEvents();
         return true;
       } catch (_) {
         host = null;
@@ -214,7 +238,7 @@
     }
 
     function detachIfIdle() {
-      if (!gestureShown && !noticeShown) detach();
+      if (!gestureShown && !noticeShown && !shield) detach();
     }
 
     // 移動のたびにスタイルを書き換えないよう、 変わった時だけ設定する
@@ -267,8 +291,23 @@
           lastGuide = key;
         }
       },
+      setShield(on) {
+        shield = !!on;
+        if (shield) {
+          if (!ensure()) {
+            shield = false;
+            return;
+          }
+          applyPointerEvents();
+          return;
+        }
+        applyPointerEvents();
+        detachIfIdle();
+      },
       clearGesture() {
         gestureShown = false;
+        shield = false;
+        applyPointerEvents();
         if (parts) {
           parts.svg.style.display = 'none';
           parts.guide.hidden = true;
@@ -295,6 +334,8 @@
       reset() {
         hideNotice();
         gestureShown = false;
+        shield = false;
+        applyPointerEvents();
         detach();
         host = null;
         parts = null;
@@ -302,6 +343,8 @@
         lastGuide = '';
       },
       destroy(keepNotice) {
+        shield = false;
+        applyPointerEvents();
         if (keepNotice && noticeShown) {
           gestureShown = false;
           if (parts) {
@@ -331,9 +374,11 @@
     let destroyed = false;
     let settings = null;
     let loaded = false;
+    let loadingSettings = false;
     const pendingDelta = {};
     let session = null;
     let pendingGuardRelease = false;
+    let lastOwnReleaseAt = 0;
     // 他のフレームで始まったドラッグの移動 (別オリジンの iframe へ入った時など)
     let foreign = null;
     let foreignBlocked = false;
@@ -366,6 +411,10 @@
       return out;
     }
 
+    function isAllowedPointerType(type) {
+      return type === 'mouse' || type === 'pen' || type === '';
+    }
+
     function contextValid() {
       return attempt(() => !!(chromeApi.runtime && chromeApi.runtime.id), false);
     }
@@ -387,22 +436,136 @@
       }
     }
 
+    /* ---------- スクロール */
+
+    function scrollBehavior() {
+      const reduced = attempt(() => !!(win.matchMedia && win.matchMedia('(prefers-reduced-motion: reduce)').matches), false);
+      return reduced ? 'auto' : 'smooth';
+    }
+
+    function parentOf(node) {
+      if (!node) return null;
+      if (node.parentElement) return node.parentElement;
+      const p = node.parentNode;
+      return p && p.host ? p.host : null;
+    }
+
+    function hasScrollRoom(el, vertical, dir, rtl) {
+      if (vertical) {
+        const max = el.scrollHeight - el.clientHeight;
+        if (max <= 1) return false;
+        return dir > 0 ? el.scrollTop < max - 1 : el.scrollTop > 1;
+      }
+      const max = el.scrollWidth - el.clientWidth;
+      if (max <= 1) return false;
+      if (rtl) {
+        // Chrome / Firefox の RTL は scrollLeft が 0 から -max へ動く
+        if (el.scrollLeft <= 0) return dir < 0 ? el.scrollLeft > -max + 1 : el.scrollLeft < -1;
+      }
+      return dir > 0 ? el.scrollLeft < max - 1 : el.scrollLeft > 1;
+    }
+
+    function canScrollContainer(el, vertical, dir) {
+      if (!el || el === doc.documentElement || el === doc.body || el === doc.scrollingElement) return false;
+      if (typeof el.scrollHeight !== 'number' || typeof el.clientHeight !== 'number') return false;
+      if (typeof el.scrollWidth !== 'number' || typeof el.clientWidth !== 'number') return false;
+      const style = attempt(() => (typeof win.getComputedStyle === 'function' ? win.getComputedStyle(el) : null), null);
+      if (!style) return false;
+      const ov = vertical ? style.overflowY : style.overflowX;
+      if (ov !== 'auto' && ov !== 'scroll' && ov !== 'overlay') return false;
+      return hasScrollRoom(el, vertical, dir, style.direction === 'rtl');
+    }
+
+    function scrollTargetBy(target, left, top, behavior) {
+      if (target && typeof target.scrollBy === 'function') {
+        try {
+          target.scrollBy({ left, top, behavior });
+          return true;
+        } catch (_) {
+          try {
+            target.scrollBy(left, top);
+            return true;
+          } catch (_) {
+            // 下の代入へフォールバック
+          }
+        }
+      }
+      if (target && typeof target.scrollLeft === 'number' && typeof target.scrollTop === 'number') {
+        target.scrollLeft += left;
+        target.scrollTop += top;
+        return true;
+      }
+      return false;
+    }
+
+    function performScroll(action, startTarget, allowFallback) {
+      const vertical = action === 'scroll-up' || action === 'scroll-down';
+      const dir = action === 'scroll-down' || action === 'scroll-right' ? 1 : -1;
+      const behavior = scrollBehavior();
+
+      // まずドラッグ開始位置の要素から親方向へスクロール可能なコンテナを探す
+      let node = startTarget;
+      while (node) {
+        if (canScrollContainer(node, vertical, dir)) {
+          const span = vertical ? node.clientHeight : node.clientWidth;
+          const amount = Math.max(1, Math.round(span * SCROLL_RATIO)) * dir;
+          return scrollTargetBy(node, vertical ? 0 : amount, vertical ? amount : 0, behavior);
+        }
+        node = parentOf(node);
+      }
+
+      // 次にフレーム全体のスクロールを試す
+      const rootEl = attempt(() => doc.scrollingElement || doc.documentElement || doc.body, null);
+      const hasMetrics =
+        rootEl &&
+        typeof rootEl.scrollHeight === 'number' &&
+        typeof rootEl.clientHeight === 'number' &&
+        typeof rootEl.scrollWidth === 'number' &&
+        typeof rootEl.clientWidth === 'number';
+      if (hasMetrics) {
+        const rootStyle = attempt(() => (typeof win.getComputedStyle === 'function' ? win.getComputedStyle(rootEl) : null), null);
+        const rtl = !!(rootStyle && rootStyle.direction === 'rtl');
+        if (!hasScrollRoom(rootEl, vertical, dir, rtl)) {
+          // 子フレーム側でこれ以上スクロールできなければ、 メインフレームへ引き継ぐ
+          if (allowFallback && attempt(() => win !== win.top, false)) {
+            send({ type: 'scroll-top-frame', action }).catch(() => {});
+          }
+          return false;
+        }
+      }
+
+      const viewport = vertical
+        ? (typeof win.innerHeight === 'number' && win.innerHeight > 0 ? win.innerHeight : rootEl && rootEl.clientHeight) || 600
+        : (typeof win.innerWidth === 'number' && win.innerWidth > 0 ? win.innerWidth : rootEl && rootEl.clientWidth) || 800;
+      const amount = Math.max(1, Math.round(viewport * SCROLL_RATIO)) * dir;
+      return scrollTargetBy(win, vertical ? 0 : amount, vertical ? amount : 0, behavior) || scrollTargetBy(rootEl, vertical ? 0 : amount, vertical ? amount : 0, behavior);
+    }
+
     /* ---------- 設定 */
 
     function loadSettings(retry) {
+      loadingSettings = true;
       Promise.resolve()
         .then(() => chromeApi.storage.local.get(C.SETTING_KEYS))
         .then(
           (raw) => {
+            loadingSettings = false;
             if (destroyed) return;
             // 読み込み中に届いた変更を、 古い読み込み結果で取り消さない
             settings = C.normalizeSettings({ ...(raw || {}), ...pendingDelta });
             loaded = true;
           },
           () => {
-            if (destroyed || !contextValid()) return;
+            if (destroyed || !contextValid()) {
+              loadingSettings = false;
+              return;
+            }
             const n = retry || 0;
-            if (n < 5) setTimer(() => loadSettings(n + 1), 400 * (n + 1));
+            if (n < 5) {
+              setTimer(() => loadSettings(n + 1), 400 * (n + 1));
+            } else {
+              loadingSettings = false;
+            }
           }
         );
     }
@@ -432,6 +595,12 @@
       return e.target && typeof e.target.setPointerCapture === 'function' ? e.target : null;
     }
 
+    function startTargetOf(e) {
+      const path = attempt(() => e.composedPath(), null);
+      if (path && path.length && path[0]) return path[0];
+      return e.target || null;
+    }
+
     function startSession(e) {
       const path = new GP.GesturePath(e.clientX, e.clientY);
       session = {
@@ -440,9 +609,12 @@
         gestureId: C.createUuidV4(cryptoObj),
         path,
         captureEl: null,
+        startTarget: startTargetOf(e),
         hasCapture: false,
         recognized: false,
         guardSentAt: 0,
+        releaseGraceToken: 0,
+        releaseGraceActive: false,
         cursor: { x: e.clientX, y: e.clientY },
         lastOwnAt: eventTime(e),
         relay: null
@@ -475,14 +647,22 @@
       send({ type: 'menu-guard', token, ms }).catch(() => {});
     }
 
+    function setOverlayShield(on) {
+      if (typeof overlay.setShield === 'function') overlay.setShield(on);
+    }
+
     function afterPathUpdate() {
       const s = session;
       if (!s) return;
       const shape = GS.recognize(s.path);
       if (shape && !s.recognized) s.recognized = true;
-      if (s.recognized && (!s.guardSentAt || now() - s.guardSentAt > REMOTE_GUARD_REFRESH_MS)) {
-        s.guardSentAt = now();
-        sendGuard(REMOTE_GUARD_MS);
+      if (s.recognized) {
+        // 認識後は全画面シールドで iframe や動的 DOM 更新による pointerup 欠落を防ぐ
+        setOverlayShield(true);
+        if (!s.guardSentAt || now() - s.guardSentAt > REMOTE_GUARD_REFRESH_MS) {
+          s.guardSentAt = now();
+          sendGuard(REMOTE_GUARD_MS);
+        }
       }
       render();
     }
@@ -516,8 +696,12 @@
     function cancel(reason) {
       const s = session;
       if (!s) return;
+      s.releaseGraceToken += 1;
+      s.releaseGraceActive = false;
       session = null;
+      lastOwnReleaseAt = now();
       releaseCapture(s);
+      setOverlayShield(false);
       overlay.clearGesture();
       // 中止したドラッグの続きを他のフレームへ中継しない
       foreignBlocked = true;
@@ -533,7 +717,7 @@
 
     // このフレームに記録がないのに右ボタンを押したままの移動が届いた: 押したフレームへ移動量を中継する
     function trackForeign(e) {
-      if (e.buttons !== 2 || (e.pointerType !== 'mouse' && e.pointerType !== 'pen')) {
+      if (e.buttons !== 2 || !isAllowedPointerType(e.pointerType)) {
         foreign = null;
         foreignBlocked = false;
         return;
@@ -566,19 +750,28 @@
 
     function relayRelease(e) {
       const f = foreign;
+      const blocked = foreignBlocked;
       foreign = null;
       foreignBlocked = false;
-      if (!f) return;
-      f.points.push([e.clientX - f.x, e.clientY - f.y]);
-      f.at = eventTime(e);
-      flushRelay(f, 'up');
+      if (f) {
+        f.points.push([e.clientX - f.x, e.clientY - f.y]);
+        f.at = eventTime(e);
+        lastOwnReleaseAt = now();
+        flushRelay(f, 'up');
+        return;
+      }
+      // 移動イベントなしで別フレーム上に直接離された解放も中継する (直前の解放に続く互換 mouseup は除外)
+      if (blocked || !loaded || !settings || !settings.enabled) return;
+      if (lastOwnReleaseAt && now() - lastOwnReleaseAt < OWN_RELEASE_QUIET_MS) return;
+      lastOwnReleaseAt = now();
+      send({ type: 'gesture-relay', token, kind: 'up', points: [], at: eventTime(e) }).catch(() => {});
     }
 
     // 他のフレームから中継された移動を、 このフレームの記録へ足す
     function onRelay(message) {
       const s = session;
       if (!s || message.token === token || !Array.isArray(message.points)) return;
-      if (typeof message.at !== 'number' || message.at < s.lastOwnAt) return;
+      if (typeof message.at !== 'number' || message.at + RELAY_CLOCK_SLOP_MS < s.lastOwnAt) return;
       if (!s.relay || s.relay.source !== message.token) s.relay = { source: message.token, base: { ...s.cursor } };
       const base = s.relay.base;
       for (const p of message.points.slice(0, RELAY_MAX_POINTS)) {
@@ -596,9 +789,15 @@
     function finish(x, y) {
       const s = session;
       if (!s) return;
-      s.path.add(x, y);
+      s.releaseGraceToken += 1;
+      s.releaseGraceActive = false;
+      if (typeof x === 'number' && typeof y === 'number' && Number.isFinite(x) && Number.isFinite(y)) {
+        s.path.add(x, y);
+      }
       session = null;
+      lastOwnReleaseAt = now();
       releaseCapture(s);
+      setOverlayShield(false);
       overlay.clearGesture();
       const shape = GS.recognize(s.path);
       if (shape || s.recognized) {
@@ -608,18 +807,33 @@
       }
       if (s.guardSentAt) sendGuard(MENU_SUPPRESS_MS);
       if (!shape) return;
-      execute(shape, s.gestureId, settings.gestures[shape] || 'none');
+      execute(shape, s.gestureId, settings.gestures[shape] || 'none', s.startTarget, 0);
     }
 
-    function execute(shape, gestureId, expected) {
+    function execute(shape, gestureId, expected, startTarget, retry) {
+      const attemptNo = retry || 0;
       send({ type: 'execute-gesture', gesture: shape, gestureId, action: expected }).then(
         (resp) => {
-          if (destroyed || !resp || resp.ok) return;
+          if (destroyed || !resp) return;
+          if (resp.ok) {
+            if (C.isScrollAction(resp.action)) performScroll(resp.action, startTarget, true);
+            return;
+          }
           if (!settings || !settings.showFeedback || !DISPLAY_REASONS.has(resp.reason)) return;
           showNotice(messageFor(resp));
         },
         () => {
-          if (!contextValid()) handleInvalidated();
+          if (destroyed) return;
+          if (!contextValid()) {
+            handleInvalidated();
+            return;
+          }
+          // Service Worker のスリープ復帰直後など一時的な通信切断は同じ gestureId で再送する
+          if (attemptNo < EXECUTE_RETRY_DELAYS.length) {
+            setTimer(() => {
+              if (!destroyed && contextValid()) execute(shape, gestureId, expected, startTarget, attemptNo + 1);
+            }, EXECUTE_RETRY_DELAYS[attemptNo]);
+          }
         }
       );
     }
@@ -660,6 +874,14 @@
       pendingGuardRelease = false;
     }
 
+    function isOverIframe(e) {
+      if (e.target && String(e.target.tagName || '').toUpperCase() === 'IFRAME') return true;
+      if (typeof e.clientX !== 'number' || typeof e.clientY !== 'number') return false;
+      if (!Number.isFinite(e.clientX) || !Number.isFinite(e.clientY)) return false;
+      const under = attempt(() => (typeof doc.elementFromPoint === 'function' ? doc.elementFromPoint(e.clientX, e.clientY) : null), null);
+      return !!(under && String(under.tagName || '').toUpperCase() === 'IFRAME');
+    }
+
     /* ---------- イベント */
 
     function onPointerDown(e) {
@@ -674,9 +896,13 @@
         if (!lostRelease) return;
       }
       if (e.button === 2) resetMenuGuard();
-      if (!loaded || !settings || !settings.enabled) return;
+      if (!loaded) {
+        if (!loadingSettings) loadSettings(0);
+        return;
+      }
+      if (!settings || !settings.enabled) return;
       if (e.button !== 2 || e.buttons !== 2) return;
-      if (e.pointerType !== 'mouse' && e.pointerType !== 'pen') return;
+      if (!isAllowedPointerType(e.pointerType)) return;
       startSession(e);
     }
 
@@ -689,8 +915,24 @@
       }
       if (e.pointerId !== s.pointerId) return;
       if (e.buttons !== 2) {
-        cancel('buttons-changed');
+        if (e.buttons !== 0) {
+          cancel('buttons-changed');
+          return;
+        }
+        // 高負荷時などに pointerup より先に buttons=0 の pointermove が届く場合は短時間だけ解放を待つ
+        if (!s.releaseGraceActive) {
+          s.releaseGraceActive = true;
+          s.releaseGraceToken += 1;
+          const grace = s.releaseGraceToken;
+          setTimer(() => {
+            if (session === s && s.releaseGraceToken === grace) cancel('buttons-changed');
+          }, RELEASE_GRACE_MS);
+        }
         return;
+      }
+      if (s.releaseGraceActive) {
+        s.releaseGraceActive = false;
+        s.releaseGraceToken += 1;
       }
       for (const [x, y] of pointsOf(e)) s.path.add(x, y);
       s.cursor = { x: e.clientX, y: e.clientY };
@@ -747,7 +989,7 @@
     function onPointerOut(e) {
       const s = session;
       if (!s || e.pointerId !== s.pointerId || s.hasCapture) return;
-      if (e.relatedTarget == null) cancel('left-page');
+      if (e.relatedTarget == null && !isOverIframe(e)) cancel('left-page');
     }
 
     function onKeyDown(e) {
@@ -759,6 +1001,8 @@
 
     function onContextMenu(e) {
       if (!e.isTrusted) return;
+      // Windows 等で pointerup / mouseup を取りこぼして解放時 contextmenu (buttons=0) だけ届いた場合の代替完了
+      if (session && session.recognized && e.buttons === 0) finish(e.clientX, e.clientY);
       const t = now();
       const suppress = (session && session.recognized) || t < menu.until || t < menu.armedUntil || t < menu.remoteUntil;
       if (!suppress) return;
@@ -771,6 +1015,8 @@
 
     function onAuxClick(e) {
       if (!e.isTrusted || e.button !== 2) return;
+      // pointerup / mouseup が届かず auxclick (button=2, buttons=0) だけ届いた場合の代替完了
+      if (session && e.buttons === 0) finish(e.clientX, e.clientY);
       const t = now();
       const suppress = (session && session.recognized) || t < menu.auxUntil || t < menu.armedUntil || t < menu.remoteUntil;
       if (!suppress) return;
@@ -825,6 +1071,10 @@
       }
       if (message.type === 'gesture-relay') {
         onRelay(message);
+        return false;
+      }
+      if (message.type === 'gesture-scroll') {
+        if (C.isScrollAction(message.action)) performScroll(message.action, null, false);
         return false;
       }
       return false;

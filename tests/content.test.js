@@ -74,7 +74,8 @@ function setup(options = {}) {
     },
     dispatchEvent(ev) {
       this.fire(ev.type, ev);
-    }
+    },
+    ...(options.doc || {})
   });
   const sent = [];
   const storage = { ...(options.storage || {}) };
@@ -82,10 +83,11 @@ function setup(options = {}) {
   const onChanged = createEvent();
   const runtime = {
     id: EXT_ID,
-    getManifest: () => ({ version: '3.5.0' }),
+    getManifest: () => ({ version: '3.6.0' }),
     onMessage,
     sendMessage(msg) {
       sent.push(msg);
+      if (options.send) return options.send(msg);
       if (options.respond) return Promise.resolve(options.respond(msg));
       return Promise.resolve(msg.type === 'execute-gesture' ? { ok: true, action: msg.action } : { ok: true });
     }
@@ -98,7 +100,7 @@ function setup(options = {}) {
       onChanged
     }
   };
-  const overlay = { renders: [], notices: [], cleared: 0, resets: 0, destroyed: 0 };
+  const overlay = { renders: [], notices: [], shields: [], cleared: 0, resets: 0, destroyed: 0 };
   const ctrl = createController({
     win,
     doc,
@@ -108,6 +110,7 @@ function setup(options = {}) {
     crypto: options.crypto || webcrypto,
     createOverlay: () => ({
       render: (view) => overlay.renders.push(view),
+      setShield: (on) => overlay.shields.push(!!on),
       clearGesture: () => {
         overlay.cleared += 1;
       },
@@ -528,7 +531,7 @@ test('C21: 接続確認に版と準備状態を返す', async () => {
   t.chrome.runtime.onMessage.emit({ type: 'gesture-ping' }, { id: EXT_ID }, (r) => {
     reply = r;
   });
-  assert.deepEqual(reply, { ok: true, version: '3.5.0', ready: true, readyState: 'complete', contentType: 'text/html' });
+  assert.deepEqual(reply, { ok: true, version: '3.6.0', ready: true, readyState: 'complete', contentType: 'text/html' });
   let other = null;
   t.chrome.runtime.onMessage.emit({ type: 'gesture-ping' }, { id: 'other' }, (r) => {
     other = r;
@@ -713,3 +716,216 @@ test('C29: 認識したドラッグでは右ボタンの auxclick も抑制し�
   assert.equal(t.menu().defaultPrevented, true);
   assert.equal(aux(2).defaultPrevented, true);
 });
+
+test('C30: pointerup の直前に buttons=0 の pointermove が来ても解放で実行し、 解放が来ない場合だけ中止する', async () => {
+  const t = setup();
+  await t.ready();
+  t.down(0, 0);
+  t.move(90, 0);
+  t.move(95, 0, { buttons: 0 });
+  assert.ok(t.ctrl.session, '即中止せず短時間待つ');
+  t.up(95, 0);
+  await settle();
+  assert.equal(t.executes().length, 1);
+  assert.equal(t.executes()[0].gesture, 'R');
+  // 完了後に猶予タイマーが走っても影響しない
+  t.runTimers();
+  assert.equal(t.executes().length, 1);
+
+  // 画面外で離して pointerup が来ないまま戻ってきた場合は猶予満了で中止する
+  t.down(0, 0);
+  t.move(90, 0);
+  t.move(95, 0, { buttons: 0 });
+  t.runTimers();
+  assert.equal(t.ctrl.session, null);
+  t.up(95, 0);
+  await settle();
+  assert.equal(t.executes().length, 1);
+});
+
+test('C31: pointerup / mouseup が欠落しても auxclick や解放時 contextmenu で代替完了する', async () => {
+  const t = setup();
+  await t.ready();
+  // auxclick (button=2, buttons=0) による代替完了
+  t.down(0, 0);
+  t.move(90, 0);
+  const auxEv = { isTrusted: true, button: 2, buttons: 0, clientX: 90, clientY: 0, defaultPrevented: false, stopped: false, preventDefault() { this.defaultPrevented = true; }, stopImmediatePropagation() { this.stopped = true; } };
+  t.win.fire('auxclick', auxEv);
+  await settle();
+  assert.equal(t.executes().length, 1);
+  assert.equal(t.executes()[0].gesture, 'R');
+  assert.equal(auxEv.defaultPrevented, true);
+
+  // 押下時の contextmenu (buttons=2: Linux/macOS 型) では完了させない
+  t.down(0, 0);
+  t.move(-90, 0);
+  const pressMenu = t.menu({ buttons: 2, clientX: -90, clientY: 0 });
+  assert.equal(pressMenu.defaultPrevented, true);
+  assert.ok(t.ctrl.session, '押下中の contextmenu では完了しない');
+  // 解放時の contextmenu (buttons=0: Windows 型) だけ届いた場合は完了させる
+  const releaseMenu = t.menu({ buttons: 0, clientX: -90, clientY: 0 });
+  await settle();
+  assert.equal(releaseMenu.defaultPrevented, true);
+  assert.equal(t.ctrl.session, null);
+  assert.equal(t.executes().length, 2);
+  assert.equal(t.executes()[1].gesture, 'L');
+});
+
+test('C32: 移動なしで別フレーム上に直接離された解放と微小な時刻ずれを正しく中継・完了する', async () => {
+  const parent = setup();
+  const child = setup();
+  await parent.ready();
+  await child.ready();
+  parent.down(400, 200);
+  parent.move(520, 200);
+  // 子フレーム側で pointermove を経ずに pointerup だけ発生 (さらに 5ms だけ古い時刻)
+  parent.advance(5);
+  child.up(20, 40);
+  child.mouse('mouseup', 20, 40);
+  const relays = child.sent.filter((m) => m.type === 'gesture-relay');
+  assert.equal(relays.length, 1, '互換 mouseup で二重中継しない');
+  assert.equal(relays[0].kind, 'up');
+  assert.deepEqual(relays[0].points, []);
+  relayTo(child, parent);
+  await settle();
+  assert.equal(parent.executes().length, 1);
+  assert.equal(parent.executes()[0].gesture, 'R');
+});
+
+test('C33: Pointer Capture 喪失後に iframe 上へ出た pointerout では中止しない', async () => {
+  const iframeNode = { tagName: 'IFRAME' };
+  const t = setup({ doc: { elementFromPoint: () => iframeNode } });
+  await t.ready();
+  t.down(100, 100);
+  t.move(200, 100);
+  t.win.fire('lostpointercapture', { pointerId: 1 });
+  t.win.fire('pointerout', { pointerId: 1, relatedTarget: null, clientX: 250, clientY: 100 });
+  assert.ok(t.ctrl.session, 'iframe 上なら継続する');
+  t.up(250, 100);
+  await settle();
+  assert.equal(t.executes().length, 1);
+});
+
+test('C34: 認識後だけイベントシールドを有効化し、 完了・中止で確実に解除する', async () => {
+  const t = setup();
+  await t.ready();
+  // 通常右クリックではシールドを張らない
+  await t.drag([[10, 10]]);
+  assert.equal(t.overlay.shields.includes(true), false);
+
+  // 認識したら有効化し、 完了で解除
+  t.overlay.shields.length = 0;
+  t.down(0, 0);
+  t.move(90, 0);
+  assert.equal(t.overlay.shields.at(-1), true);
+  t.up(90, 0);
+  assert.equal(t.overlay.shields.at(-1), false);
+
+  // 中止でも解除
+  t.overlay.shields.length = 0;
+  t.down(0, 0);
+  t.move(90, 0);
+  assert.equal(t.overlay.shields.at(-1), true);
+  t.win.fire('keydown', { key: 'Escape', preventDefault() {}, stopImmediatePropagation() {} });
+  assert.equal(t.overlay.shields.at(-1), false);
+});
+
+test('C35: Service Worker 通信の一時失敗時は同じ gestureId で自動再送する', async () => {
+  let execAttempts = 0;
+  const t = setup({
+    send(msg) {
+      if (msg.type === 'execute-gesture') {
+        execAttempts += 1;
+        if (execAttempts === 1) return Promise.reject(new Error('Could not establish connection'));
+        return Promise.resolve({ ok: true, action: msg.action });
+      }
+      return Promise.resolve({ ok: true });
+    }
+  });
+  await t.ready();
+  await t.drag([[0, 0], [90, 0]]);
+  assert.equal(execAttempts, 1);
+  t.runTimers();
+  await settle();
+  assert.equal(execAttempts, 2);
+  const ex = t.executes();
+  assert.equal(ex.length, 2);
+  assert.equal(ex[0].gestureId, ex[1].gestureId, '同じ gestureId で冪等に再送する');
+});
+
+test('C36: 上下左右 4 方向のスクロール実行 (ページ 80%・内側コンテナ・サブフレームフォールバック)', async () => {
+  const scrollCalls = [];
+  const rootEl = { scrollHeight: 3000, clientHeight: 800, scrollTop: 500, scrollWidth: 2500, clientWidth: 1000, scrollLeft: 400 };
+  const t = setup({
+    storage: { gestures: { U: 'scroll-up', D: 'scroll-down', L: 'scroll-left', R: 'scroll-right' } },
+    win: {
+      innerHeight: 800,
+      innerWidth: 1000,
+      scrollBy(opts) {
+        scrollCalls.push(opts);
+      }
+    },
+    doc: { scrollingElement: rootEl }
+  });
+  await t.ready();
+  await t.drag([[200, 200], [200, 320]]); // D -> scroll-down (+640)
+  await t.drag([[200, 200], [200, 80]]);  // U -> scroll-up (-640)
+  await t.drag([[200, 200], [320, 200]]); // R -> scroll-right (+800)
+  await t.drag([[200, 200], [80, 200]]);  // L -> scroll-left (-800)
+  assert.deepEqual(scrollCalls, [
+    { left: 0, top: 640, behavior: 'smooth' },
+    { left: 0, top: -640, behavior: 'smooth' },
+    { left: 800, top: 0, behavior: 'smooth' },
+    { left: -800, top: 0, behavior: 'smooth' }
+  ]);
+
+  // 内側スクロールコンテナが優先される
+  const containerCalls = [];
+  const box = {
+    scrollHeight: 1000,
+    clientHeight: 200,
+    scrollTop: 0,
+    scrollWidth: 1000,
+    clientWidth: 300,
+    scrollLeft: 0,
+    parentElement: rootEl,
+    scrollBy(opts) {
+      containerCalls.push(opts);
+    }
+  };
+  const child = { parentElement: box, setPointerCapture() {}, releasePointerCapture() {}, hasPointerCapture: () => false };
+  const t2 = setup({
+    storage: { gestures: { D: 'scroll-down', R: 'scroll-right' } },
+    win: {
+      innerHeight: 800,
+      innerWidth: 1000,
+      getComputedStyle: (n) => (n === box ? { overflowY: 'auto', overflowX: 'auto', direction: 'ltr' } : { overflowY: 'visible', overflowX: 'visible', direction: 'ltr' }),
+      scrollBy() {
+        throw new Error('コンテナが動く時は window を動かさない');
+      }
+    },
+    doc: { scrollingElement: rootEl }
+  });
+  await t2.ready();
+  t2.down(50, 50, { target: child, composedPath: () => [child, box, rootEl] });
+  t2.move(50, 150, { target: child, composedPath: () => [child, box, rootEl] });
+  t2.up(50, 150, { target: child, composedPath: () => [child, box, rootEl] });
+  await settle();
+  assert.deepEqual(containerCalls, [{ left: 0, top: 160, behavior: 'smooth' }]);
+
+  // 子フレームでスクロール不可ならメインフレームへフォールバック要求を送る
+  const sub = setup({
+    storage: { gestures: { D: 'scroll-down' } },
+    win: { top: {}, innerHeight: 300, innerWidth: 300 },
+    doc: { scrollingElement: { scrollHeight: 300, clientHeight: 300, scrollTop: 0, scrollWidth: 300, clientWidth: 300, scrollLeft: 0 } }
+  });
+  await sub.ready();
+  await sub.drag([[50, 50], [50, 150]]);
+  assert.ok(sub.sent.some((m) => m.type === 'scroll-top-frame' && m.action === 'scroll-down'));
+
+  // メインフレームが gesture-scroll を受け取ってスクロールする
+  scrollCalls.length = 0;
+  t.chrome.runtime.onMessage.emit({ type: 'gesture-scroll', action: 'scroll-down' }, { id: EXT_ID }, () => {});
+  assert.deepEqual(scrollCalls, [{ left: 0, top: 640, behavior: 'smooth' }]);
+});
+

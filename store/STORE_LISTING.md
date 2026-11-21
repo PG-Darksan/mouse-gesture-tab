@@ -6,12 +6,12 @@ Chrome ウェブストア デベロッパー ダッシュボード (https://chro
 
 | 欄 | ファイル |
 | --- | --- |
-| パッケージ | `dist/mouse-gesture-tab-3.5.0.zip` (`node tools/pack.js` で作成) |
+| パッケージ | `dist/mouse-gesture-tab-3.6.0.zip` (`node tools/pack.js` で作成) |
 | ストアのアイコン (128×128) | `extension/icons/icon128.png` |
 | スクリーンショット (1280×800、 1〜5 枚) | 日本語: `store/images/ja/screenshot-1〜3.png` / 英語: `store/images/en/screenshot-1〜3.png` |
 | 小型プロモーション タイル (440×280) | `store/images/ja/promo-small-440x280.png` (英語は `en` の同名ファイル) |
 
-- 既に同じアイテムを公開している場合、 `manifest.json` の `version` (現在 3.5.0) は公開中の版より大きくする必要があります。
+- 既に同じアイテムを公開している場合、 `manifest.json` の `version` (現在 3.6.0) は公開中の版より大きくする必要があります。
 - 名前と短い説明は `extension/_locales/*/messages.json` から自動で入ります (既定の言語は日本語)。 英語の掲載情報は「ストアの掲載情報」で言語を英語に切り替えて入力します。
 
 ## 2. ストアの掲載情報
@@ -26,7 +26,7 @@ Chrome ウェブストア デベロッパー ダッシュボード (https://chro
 
 ■ できること
 ・上下左右の4種類と、直交方向へ1回曲がる8種類（下→右、右→上 など）の全12種類の形
-・形ごとに操作を割り当て：前のタブへ／次のタブへ／タブを閉じる／ウィンドウを閉じる／新しいタブ／閉じたタブ・ウィンドウを復元／再読み込み／スーパーリロード／戻る／進む／タブを複製／タブの固定を切り替え／何もしない
+・形ごとに操作を割り当て：前のタブへ／次のタブへ／タブを閉じる／ウィンドウを閉じる／新しいタブ／閉じたタブ・ウィンドウを復元／再読み込み／スーパーリロード／戻る／進む／タブを複製／タブの固定を切り替え／上・下・左・右へスクロール／何もしない
 ・初期設定は「左＝前のタブへ」「右＝次のタブへ」だけ。ほかの形は自由に割り当てられます
 
 ■ 使いやすさ
@@ -56,7 +56,7 @@ Hold the right mouse button, move up, down, left or right, and release: the tab 
 
 WHAT YOU CAN DO
 • 12 shapes: the four directions plus eight shapes with one right-angle turn (Down → Right, Right → Up, and so on)
-• Assign an action to each shape: previous tab, next tab, close tab, close window, new tab, reopen closed tab/window, reload, hard reload, back, forward, duplicate tab, pin/unpin tab, or do nothing
+• Assign an action to each shape: previous tab, next tab, close tab, close window, new tab, reopen closed tab/window, reload, hard reload, back, forward, duplicate tab, pin/unpin tab, scroll up/down/left/right, or do nothing
 • Out of the box only Left = previous tab and Right = next tab are assigned
 
 EASY TO USE

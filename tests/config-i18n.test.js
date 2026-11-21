@@ -20,7 +20,10 @@ test('初期設定', () => {
     gestures: { L: 'previous-tab', R: 'next-tab', U: 'none', D: 'none', DR: 'none', DL: 'none', UR: 'none', UL: 'none', RU: 'none', RD: 'none', LU: 'none', LD: 'none' }
   });
   assert.equal(C.GESTURES.length, 12);
-  assert.equal(C.ACTIONS.length, 13);
+  assert.equal(C.ACTIONS.length, 17);
+  assert.deepEqual([...C.SCROLL_ACTIONS], ['scroll-up', 'scroll-down', 'scroll-left', 'scroll-right']);
+  assert.equal(C.isScrollAction('scroll-up'), true);
+  assert.equal(C.isScrollAction('next-tab'), false);
   d.gestures.L = 'none';
   assert.equal(C.defaultSettings().gestures.L, 'previous-tab', '初期値は共有しない');
 });

@@ -39,7 +39,7 @@ function clone(v) {
 function createFakeChrome(options = {}) {
   const id = options.id || 'abcdefghijklmnopabcdefghijklmnop';
   const base = `chrome-extension://${id}/`;
-  const version = options.version || '3.5.0';
+  const version = options.version || '3.6.0';
   const store = clone(options.storage || {});
   const calls = [];
   const overrides = {};

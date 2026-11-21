@@ -563,7 +563,7 @@ test('A23: 標準新規タブ・管理画面・ストアは対象外。 注入�
 test('Google の検索トップは通常ページ、 標準新規タブとは別', async () => {
   const { fake } = setup();
   const tab = fake.addTab({ url: 'https://www.google.com/?hl=ja', active: true });
-  fake.contentFrames.set(tab.id, { version: '3.5.0', ready: true });
+  fake.contentFrames.set(tab.id, { version: '3.6.0', ready: true });
   assert.equal((await status(fake)).state, 'ready');
   const nt = setup();
   nt.fake.addTab({ url: 'chrome://new-tab-page/', active: true });
@@ -615,7 +615,7 @@ test('file:// はファイル URL のアクセス設定へ案内する', async (
 test('診断: 接続確認・再注入・古い版・PDF・再読み込み案内', async () => {
   const { fake } = setup();
   const tab = fake.addTab({ url: 'https://example.com/', active: true });
-  fake.contentFrames.set(tab.id, { version: '3.5.0', ready: true });
+  fake.contentFrames.set(tab.id, { version: '3.6.0', ready: true });
   assert.equal((await status(fake)).state, 'ready');
   assert.equal(fake.callsOf('scripting.executeScript').length, 0);
 
@@ -623,7 +623,7 @@ test('診断: 接続確認・再注入・古い版・PDF・再読み込み案内
   assert.equal((await status(fake)).state, 'ready', '古い版は再注入して確認');
   assert.equal(fake.callsOf('scripting.executeScript').length, 1);
 
-  fake.contentFrames.set(tab.id, { version: '3.5.0', ready: true, contentType: 'application/pdf' });
+  fake.contentFrames.set(tab.id, { version: '3.6.0', ready: true, contentType: 'application/pdf' });
   assert.equal((await status(fake)).messageKey, 'status.pdf');
 
   const t2 = fake.addTab({ url: 'https://broken.example/', active: true });
@@ -663,7 +663,7 @@ test('同じタブへの同時診断・注入はまとめる', async () => {
 test('導入時・サイト許可追加時に開いているページを準備する', async () => {
   const { fake } = setup();
   const ready = fake.addTab({ url: 'https://ready.example/' });
-  fake.contentFrames.set(ready.id, { version: '3.5.0', ready: true });
+  fake.contentFrames.set(ready.id, { version: '3.6.0', ready: true });
   const plain = fake.addTab({ url: 'https://plain.example/' });
   fake.addTab({ url: 'chrome://newtab/' });
   fake.addTab({ url: 'https://chromewebstore.google.com/' });
@@ -763,3 +763,25 @@ test('履歴や閉じたタブがない場合は専用の理由を返す', async
   assert.equal(rRestore.display, true);
   assert.equal(rRestore.message, '復元できる閉じたタブ／ウィンドウがありません');
 });
+
+test('4 方向スクロール操作は設定と状態を確認して承認応答を返し、 サブフレームからのフォールバック中継を検証する', async () => {
+  const { fake } = setup({
+    storage: { gestures: { U: 'scroll-up', D: 'scroll-down', L: 'scroll-left', R: 'scroll-right' } }
+  });
+  const [a] = threeTabs(fake);
+  for (const [g, action] of [['U', 'scroll-up'], ['D', 'scroll-down'], ['L', 'scroll-left'], ['R', 'scroll-right']]) {
+    const r = await exec(fake, a, g, { action });
+    assert.deepEqual(r, { ok: true, action }, action);
+  }
+  assert.equal(fake.callsOf('tabs.update').length, 0, 'タブ操作 API は呼ばない');
+
+  const sender = fake.contentSender(a, { frameId: 5 });
+  await fake.sendRuntime({ type: 'scroll-top-frame', action: 'scroll-down' }, sender);
+  await fake.sendRuntime({ type: 'scroll-top-frame', action: 'close-tab' }, sender);
+  await fake.sendRuntime({ type: 'scroll-top-frame', action: 'scroll-down' }, fake.popupSender());
+  await settle();
+  const relayed = fake.messageLog.filter((m) => m.message.type === 'gesture-scroll');
+  assert.equal(relayed.length, 1);
+  assert.deepEqual(relayed[0], { tabId: a, message: { type: 'gesture-scroll', action: 'scroll-down' }, options: { frameId: 0 } });
+});
+

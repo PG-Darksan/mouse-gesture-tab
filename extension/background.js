@@ -406,6 +406,12 @@
         case 'toggle-pin':
           await chromeApi.tabs.update(tab.id, { pinned: !tab.pinned });
           break;
+        case 'scroll-up':
+        case 'scroll-down':
+        case 'scroll-left':
+        case 'scroll-right':
+          // ページ内のスクロール対象判定と滑らかなスクロールは承認後にコンテンツスクリプト側で実行する
+          break;
         default:
           return fail('invalid');
       }
@@ -674,6 +680,15 @@
         case 'gesture-relay':
           if (!isContentSender(sender)) return false;
           relayMove(sender.tab.id, message);
+          sendResponse({ ok: true });
+          return false;
+        case 'scroll-top-frame':
+          if (!isContentSender(sender)) return false;
+          if (C.isScrollAction(message.action)) {
+            Promise.resolve()
+              .then(() => chromeApi.tabs.sendMessage(sender.tab.id, { type: 'gesture-scroll', action: message.action }, { frameId: 0 }))
+              .catch(() => {});
+          }
           sendResponse({ ok: true });
           return false;
         case 'save-settings':

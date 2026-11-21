@@ -3,7 +3,7 @@
 Windows の Google Chrome / Microsoft Edge 向けの Manifest V3 拡張機能です。
 Web ページで右ボタンを押したまま上下左右に動かし、 右ボタンを離した時に、 形に割り当てたブラウザ操作を 1 回だけ実行します。
 
-- 版: 3.5.0 (最小 Chrome 119)
+- 版: 3.6.0 (最小 Chrome 119)
 - ビルド・`npm install` は不要。 `extension` フォルダーがそのまま拡張機能です。
 
 ## フォルダー構成
@@ -67,7 +67,7 @@ dist/                 ストアへアップロードする ZIP
 - 現在のページの状態 (このページで使用できます / 対象外 / サイトの許可が必要 など)。 「このサイトを許可」は必要な時だけ表示し、 そのホストだけを許可します。
 - 「有効」「タブを循環」「軌跡」「操作ガイド」の切り替え
 - 文字サイズ (小・標準・大)、 言語 (自動・日本語・English)
-- 12 種類の形それぞれに、 13 の選択肢から操作を割り当て
+- 12 種類の形それぞれに、 17 の選択肢から操作を割り当て（上下左右 1 方向ずつのスクロールを含む）
 
 ## 制限
 
@@ -98,9 +98,10 @@ node tests/e2e/run-e2e.js --ext=<フォルダー> # ZIP を展開した配布物
 ## ストアへの申請
 
 ```powershell
-node tools/pack.js           # dist/mouse-gesture-tab-<版>.zip を作成
-node tools/store-assets.js   # store/images/ のスクリーンショットとタイルを作り直す (任意)
-node tools/render-icons.js   # icon.svg から PNG アイコンを作り直す (任意)
+node tools/pack.js             # Chrome / Edge 提出用: dist/mouse-gesture-tab-<版>.zip を作成
+node tools/pack-firefox.cjs    # Firefox 提出用: dist/mouse-gesture-tab-<版>-firefox.zip と dist/firefox/ を作成
+node tools/store-assets.js     # store/images/ のスクリーンショットとタイルを作り直す (任意)
+node tools/render-icons.js     # icon.svg から PNG アイコンを作り直す (任意)
 ```
 
 ダッシュボードの各欄へ貼る文面、 権限の理由、 データの扱いの回答は [store/STORE_LISTING.md](store/STORE_LISTING.md)、

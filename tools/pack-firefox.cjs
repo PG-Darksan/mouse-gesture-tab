@@ -39,6 +39,7 @@ function firefoxManifest(m) {
     out.content_scripts = out.content_scripts.map((cs) => {
       const c = { ...cs };
       delete c.match_origin_as_fallback; // Chrome 専用キー
+      c.match_about_blank = true;
       return c;
     });
   }

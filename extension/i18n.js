@@ -21,6 +21,10 @@
     'action.go-forward': '進む',
     'action.duplicate-tab': 'タブを複製',
     'action.toggle-pin': 'タブの固定を切り替え',
+    'action.scroll-up': '上へスクロール',
+    'action.scroll-down': '下へスクロール',
+    'action.scroll-left': '左へスクロール',
+    'action.scroll-right': '右へスクロール',
 
     'dir.L': '左',
     'dir.R': '右',
@@ -134,6 +138,10 @@
     'action.go-forward': 'Forward',
     'action.duplicate-tab': 'Duplicate tab',
     'action.toggle-pin': 'Pin / unpin tab',
+    'action.scroll-up': 'Scroll up',
+    'action.scroll-down': 'Scroll down',
+    'action.scroll-left': 'Scroll left',
+    'action.scroll-right': 'Scroll right',
 
     'dir.L': 'Left',
     'dir.R': 'Right',

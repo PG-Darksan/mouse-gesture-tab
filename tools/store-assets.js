@@ -23,7 +23,7 @@ const COPY = {
   ja: {
     caption: '右ボタンを押したまま描いて、離すと実行',
     s2Title: '形ごとに操作を選んで、<br>その場で自動保存',
-    s2Points: ['全12種類の形に、13の選択肢から操作を割り当て', '軌跡と操作ガイドで、離す前に結果が分かる', '日本語・英語、文字サイズは3段階'],
+    s2Points: ['全12種類の形に、17の選択肢から操作を割り当て', '軌跡と操作ガイドで、離す前に結果が分かる', '日本語・英語、文字サイズは3段階'],
     s3Title: '上下左右と、1回だけ曲がる8種類',
     s3Sub: '描いている途中では何もせず、右ボタンを離した時に1回だけ実行します',
     tile: '右ドラッグでタブを操作'
@@ -31,7 +31,7 @@ const COPY = {
   en: {
     caption: 'Hold the right button, draw, release to run',
     s2Title: 'One action per shape,<br>saved instantly',
-    s2Points: ['Assign any of 13 choices to each of the 12 shapes', 'The trail and guide show the result before you release', 'Japanese or English, three text sizes'],
+    s2Points: ['Assign any of 17 choices to each of the 12 shapes', 'The trail and guide show the result before you release', 'Japanese or English, three text sizes'],
     s3Title: 'Four directions and eight one-turn shapes',
     s3Sub: 'Nothing happens while drawing. The action runs once when you release.',
     tile: 'Control tabs with right-drag'
