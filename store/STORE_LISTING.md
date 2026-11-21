@@ -30,7 +30,7 @@ Chrome ウェブストア デベロッパー ダッシュボード (https://chro
 ・初期設定は「左＝前のタブへ」「右＝次のタブへ」だけ。ほかの形は自由に割り当てられます
 
 ■ 使いやすさ
-・描いている途中では何もせず、離した時だけ実行。Esc キーで中止できます
+・通常操作は描いている途中では何もせず、離した時だけ実行（スクロールは右ボタンを押している間だけ連続動作し、離すと停止）。Esc キーで中止できます
 ・小さな手ぶれは自動で補正し、短い線でも認識します
 ・描いた線（軌跡）と、認識中の形と操作（操作ガイド）を表示。それぞれオン／オフできます
 ・左右を素早く交互に繰り返しても、操作を取りこぼしません
@@ -60,7 +60,7 @@ WHAT YOU CAN DO
 • Out of the box only Left = previous tab and Right = next tab are assigned
 
 EASY TO USE
-• Nothing happens while you draw — the action runs only when you release. Press Esc to cancel
+• Standard actions run once when you release; scroll actions scroll continuously while you hold the right button and stop on release. Press Esc to cancel
 • Small hand jitter is corrected automatically, and short strokes are recognized
 • An on-page trail and a guide show the recognized shape and its action. Each can be turned off
 • Fast left/right repetitions are never dropped

@@ -764,7 +764,7 @@ test('履歴や閉じたタブがない場合は専用の理由を返す', async
   assert.equal(rRestore.message, '復元できる閉じたタブ／ウィンドウがありません');
 });
 
-test('4 方向スクロール操作は設定と状態を確認して承認応答を返し、 サブフレームからのフォールバック中継を検証する', async () => {
+test('4 方向スクロール操作は設定と状態を確認して承認応答を返し、 サブフレームからの連続スクロール開始・停止中継を検証する', async () => {
   const { fake } = setup({
     storage: { gestures: { U: 'scroll-up', D: 'scroll-down', L: 'scroll-left', R: 'scroll-right' } }
   });
@@ -776,12 +776,16 @@ test('4 方向スクロール操作は設定と状態を確認して承認応答
   assert.equal(fake.callsOf('tabs.update').length, 0, 'タブ操作 API は呼ばない');
 
   const sender = fake.contentSender(a, { frameId: 5 });
-  await fake.sendRuntime({ type: 'scroll-top-frame', action: 'scroll-down' }, sender);
-  await fake.sendRuntime({ type: 'scroll-top-frame', action: 'close-tab' }, sender);
-  await fake.sendRuntime({ type: 'scroll-top-frame', action: 'scroll-down' }, fake.popupSender());
+  await fake.sendRuntime({ type: 'scroll-top-frame', mode: 'start', action: 'scroll-down', token: 'sub-1' }, sender);
+  await fake.sendRuntime({ type: 'scroll-top-frame', mode: 'stop', token: 'sub-1' }, sender);
+  await fake.sendRuntime({ type: 'scroll-top-frame', mode: 'start', action: 'close-tab', token: 'sub-1' }, sender);
+  await fake.sendRuntime({ type: 'scroll-top-frame', mode: 'pause', action: 'scroll-down', token: 'sub-1' }, sender);
+  await fake.sendRuntime({ type: 'scroll-top-frame', mode: 'start', action: 'scroll-down', token: 'sub-1' }, fake.popupSender());
   await settle();
   const relayed = fake.messageLog.filter((m) => m.message.type === 'gesture-scroll');
-  assert.equal(relayed.length, 1);
-  assert.deepEqual(relayed[0], { tabId: a, message: { type: 'gesture-scroll', action: 'scroll-down' }, options: { frameId: 0 } });
+  assert.equal(relayed.length, 2);
+  assert.deepEqual(relayed[0], { tabId: a, message: { type: 'gesture-scroll', mode: 'start', action: 'scroll-down', token: 'sub-1' }, options: { frameId: 0 } });
+  assert.deepEqual(relayed[1], { tabId: a, message: { type: 'gesture-scroll', mode: 'stop', token: 'sub-1' }, options: { frameId: 0 } });
 });
+
 

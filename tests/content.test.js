@@ -62,6 +62,8 @@ function makeElement() {
 function setup(options = {}) {
   let clock = 1000;
   const timers = [];
+  const frames = new Map();
+  let nextFrameId = 1;
   const win = makeTarget({ navigator: { language: 'ja' }, ...(options.win || {}) });
   const doc = makeTarget({
     visibilityState: 'visible',
@@ -107,6 +109,14 @@ function setup(options = {}) {
     chrome,
     now: () => clock,
     setTimeout: (fn) => timers.push(fn),
+    requestAnimationFrame: (fn) => {
+      const id = nextFrameId++;
+      frames.set(id, fn);
+      return id;
+    },
+    cancelAnimationFrame: (id) => {
+      frames.delete(id);
+    },
     crypto: options.crypto || webcrypto,
     createOverlay: () => ({
       render: (view) => overlay.renders.push(view),
@@ -159,11 +169,18 @@ function setup(options = {}) {
     sent,
     el,
     timers,
+    frames,
     advance(ms) {
       clock += ms;
     },
     runTimers() {
       for (const fn of timers.splice(0)) fn();
+    },
+    stepFrame(ms = 16) {
+      clock += ms;
+      const batch = [...frames.entries()];
+      frames.clear();
+      for (const [, fn] of batch) fn(clock);
     },
     down(x, y, props) {
       return win.fire('pointerdown', ev({ button: 2, buttons: 2, clientX: x, clientY: y, ...props }));
@@ -853,7 +870,7 @@ test('C35: Service Worker 通信の一時失敗時は同じ gestureId で自動�
   assert.equal(ex[0].gestureId, ex[1].gestureId, '同じ gestureId で冪等に再送する');
 });
 
-test('C36: 上下左右 4 方向のスクロール実行 (ページ 80%・内側コンテナ・サブフレームフォールバック)', async () => {
+test('C36: 上下左右 4 方向の連続スクロール (押下中のみ連続実行し、 離すと即停止・離した時の追加実行なし)', async () => {
   const scrollCalls = [];
   const rootEl = { scrollHeight: 3000, clientHeight: 800, scrollTop: 500, scrollWidth: 2500, clientWidth: 1000, scrollLeft: 400 };
   const t = setup({
@@ -863,23 +880,72 @@ test('C36: 上下左右 4 方向のスクロール実行 (ページ 80%・内側
       innerWidth: 1000,
       scrollBy(opts) {
         scrollCalls.push(opts);
+        rootEl.scrollLeft += opts.left;
+        rootEl.scrollTop += opts.top;
       }
     },
     doc: { scrollingElement: rootEl }
   });
   await t.ready();
-  await t.drag([[200, 200], [200, 320]]); // D -> scroll-down (+640)
-  await t.drag([[200, 200], [200, 80]]);  // U -> scroll-up (-640)
-  await t.drag([[200, 200], [320, 200]]); // R -> scroll-right (+800)
-  await t.drag([[200, 200], [80, 200]]);  // L -> scroll-left (-800)
-  assert.deepEqual(scrollCalls, [
-    { left: 0, top: 640, behavior: 'smooth' },
-    { left: 0, top: -640, behavior: 'smooth' },
-    { left: 800, top: 0, behavior: 'smooth' },
-    { left: -800, top: 0, behavior: 'smooth' }
-  ]);
 
-  // 内側スクロールコンテナが優先される
+  // 下へドラッグして押したままにすると複数フレームで連続スクロールする
+  t.down(200, 200);
+  t.move(200, 320);
+  assert.equal(t.ctrl.scrolling, true);
+  assert.equal(t.overlay.renders.at(-1).guide.hint, '右ボタンを離すと停止 · Escで中止');
+  t.stepFrame(50);
+  t.stepFrame(50);
+  t.stepFrame(50);
+  assert.equal(scrollCalls.length, 3, '押している間は毎フレーム進み続ける');
+  assert.ok(scrollCalls.every((c) => c.left === 0 && c.top > 0 && c.behavior === 'instant'));
+  const totalBeforeUp = scrollCalls.reduce((sum, c) => sum + c.top, 0);
+  assert.ok(totalBeforeUp > 50);
+
+  // 右ボタンを離すと即停止し、 離した時の追加スクロールも execute-gesture も起きない
+  t.up(200, 320);
+  t.mouse('mouseup', 200, 320);
+  await settle();
+  assert.equal(t.ctrl.scrolling, false);
+  assert.equal(t.frames.size, 0, '解放時に rAF を解除する');
+  assert.equal(scrollCalls.length, 3, '離した時に追加スクロールしない');
+  assert.equal(t.executes().length, 0, 'スクロールは execute-gesture を送らない');
+  assert.equal(t.menu().defaultPrevented, true, '離した直後のコンテキストメニューは抑制する');
+  t.stepFrame(50);
+  assert.equal(scrollCalls.length, 3, '解放後のフレーム経過でも動かない');
+
+  // 上・右・左の各方向も押下中だけ連続スクロールする
+  for (const [to, axis, sign] of [
+    [[200, 80], 'top', -1],
+    [[320, 200], 'left', 1],
+    [[80, 200], 'left', -1]
+  ]) {
+    scrollCalls.length = 0;
+    t.down(200, 200);
+    t.move(to[0], to[1]);
+    t.stepFrame(50);
+    t.stepFrame(50);
+    assert.equal(scrollCalls.length, 2);
+    assert.ok(scrollCalls.every((c) => Math.sign(c[axis]) === sign && c[axis === 'top' ? 'left' : 'top'] === 0 && c.behavior === 'instant'));
+    t.up(to[0], to[1]);
+    await settle();
+    assert.equal(scrollCalls.length, 2, '解放で増えない');
+  }
+
+  // 英語表示の操作ガイド文言
+  const en = setup({
+    storage: { language: 'en', gestures: { D: 'scroll-down' } },
+    win: { innerHeight: 800, innerWidth: 1000, scrollBy() {} },
+    doc: { scrollingElement: { ...rootEl } }
+  });
+  await en.ready();
+  en.down(200, 200);
+  en.move(200, 300);
+  assert.equal(en.overlay.renders.at(-1).guide.hint, 'Release the right button to stop · Esc to cancel');
+  en.up(200, 300);
+});
+
+test('C37: 内側コンテナ連続スクロール・形変更時の切替/停止・各種中止・長押し時のメニューガード延長', async () => {
+  const rootEl = { scrollHeight: 3000, clientHeight: 800, scrollTop: 500, scrollWidth: 2500, clientWidth: 1000, scrollLeft: 400 };
   const containerCalls = [];
   const box = {
     scrollHeight: 1000,
@@ -891,41 +957,166 @@ test('C36: 上下左右 4 方向のスクロール実行 (ページ 80%・内側
     parentElement: rootEl,
     scrollBy(opts) {
       containerCalls.push(opts);
+      this.scrollLeft += opts.left;
+      this.scrollTop += opts.top;
     }
   };
   const child = { parentElement: box, setPointerCapture() {}, releasePointerCapture() {}, hasPointerCapture: () => false };
-  const t2 = setup({
-    storage: { gestures: { D: 'scroll-down', R: 'scroll-right' } },
+  const winCalls = [];
+  const t = setup({
+    storage: { gestures: { D: 'scroll-down', DR: 'close-tab', DL: 'scroll-left', R: 'next-tab' } },
     win: {
       innerHeight: 800,
       innerWidth: 1000,
       getComputedStyle: (n) => (n === box ? { overflowY: 'auto', overflowX: 'auto', direction: 'ltr' } : { overflowY: 'visible', overflowX: 'visible', direction: 'ltr' }),
-      scrollBy() {
-        throw new Error('コンテナが動く時は window を動かさない');
+      scrollBy(opts) {
+        winCalls.push(opts);
       }
     },
     doc: { scrollingElement: rootEl }
   });
-  await t2.ready();
-  t2.down(50, 50, { target: child, composedPath: () => [child, box, rootEl] });
-  t2.move(50, 150, { target: child, composedPath: () => [child, box, rootEl] });
-  t2.up(50, 150, { target: child, composedPath: () => [child, box, rootEl] });
-  await settle();
-  assert.deepEqual(containerCalls, [{ left: 0, top: 160, behavior: 'smooth' }]);
+  await t.ready();
 
-  // 子フレームでスクロール不可ならメインフレームへフォールバック要求を送る
+  // 内側スクロールコンテナが優先され、 離すまで連続スクロールする
+  t.down(50, 50, { target: child, composedPath: () => [child, box, rootEl] });
+  t.move(50, 150, { target: child, composedPath: () => [child, box, rootEl] });
+  t.stepFrame(50);
+  t.stepFrame(50);
+  assert.equal(containerCalls.length, 2);
+  assert.ok(containerCalls.every((c) => c.top > 0 && c.left === 0 && c.behavior === 'instant'));
+  assert.equal(winCalls.length, 0, '内側コンテナが動く時は window を動かさない');
+  t.up(50, 150, { target: child, composedPath: () => [child, box, rootEl] });
+  await settle();
+  assert.equal(containerCalls.length, 2);
+
+  // D (scroll-down) → DR (close-tab) へ曲がると即スクロール停止し、 離すと close-tab を 1 回実行する
+  winCalls.length = 0;
+  t.down(200, 200);
+  t.move(200, 300);
+  t.stepFrame(50);
+  assert.equal(winCalls.length, 1);
+  assert.equal(t.ctrl.scrolling, true);
+  t.move(300, 300); // DR -> close-tab
+  assert.equal(t.ctrl.scrolling, false, '非スクロール形へ変わったら即停止');
+  assert.equal(t.overlay.renders.at(-1).guide.hint, '右ボタンを離すと実行 · Escで中止');
+  t.stepFrame(50);
+  assert.equal(winCalls.length, 1);
+  t.up(300, 300);
+  await settle();
+  assert.equal(t.executes().length, 1);
+  assert.equal(t.executes()[0].gesture, 'DR');
+  assert.equal(t.executes()[0].action, 'close-tab');
+
+  // D (scroll-down) → DL (scroll-left) へ曲がると横スクロールへ切り替わる
+  winCalls.length = 0;
+  t.down(200, 200);
+  t.move(200, 300);
+  t.stepFrame(50);
+  assert.ok(winCalls.at(-1).top > 0);
+  t.move(100, 300); // DL -> scroll-left
+  t.stepFrame(50);
+  assert.ok(winCalls.at(-1).left < 0 && winCalls.at(-1).top === 0, '方向切替で横スクロールへ移る');
+  // 折り返しで無効化したら即停止
+  t.move(200, 300);
+  assert.equal(t.ctrl.scrolling, false);
+  const countAfterInvalid = winCalls.length;
+  t.stepFrame(50);
+  assert.equal(winCalls.length, countAfterInvalid);
+  t.up(200, 300);
+
+  // Esc・buttons=0 猶予・長押しメニューガード延長
+  winCalls.length = 0;
+  t.down(200, 200);
+  t.move(200, 300);
+  const guardsBefore = t.sent.filter((m) => m.type === 'menu-guard').length;
+  t.advance(3100);
+  t.stepFrame(50);
+  assert.ok(t.sent.filter((m) => m.type === 'menu-guard').length > guardsBefore, '長押し中も menu-guard を延長する');
+  // buttons=0 の pointermove が先に来たら猶予中でもスクロール自体は即停止する
+  t.move(200, 305, { buttons: 0 });
+  assert.equal(t.ctrl.scrolling, false);
+  t.win.fire('keydown', { key: 'Escape', preventDefault() {}, stopImmediatePropagation() {} });
+  assert.equal(t.ctrl.session, null);
+  assert.equal(t.ctrl.scrolling, false);
+});
+
+test('C38: サブフレームからの連続スクロールフォールバック開始・延長・停止とトップフレーム側の安全期限停止', async () => {
+  const topCalls = [];
+  const topRoot = { scrollHeight: 3000, clientHeight: 800, scrollTop: 500, scrollWidth: 2500, clientWidth: 1000, scrollLeft: 400 };
+  const top = setup({
+    storage: { gestures: { D: 'scroll-down' } },
+    win: {
+      innerHeight: 800,
+      innerWidth: 1000,
+      scrollBy(opts) {
+        topCalls.push(opts);
+        topRoot.scrollLeft += opts.left;
+        topRoot.scrollTop += opts.top;
+      }
+    },
+    doc: { scrollingElement: topRoot }
+  });
   const sub = setup({
     storage: { gestures: { D: 'scroll-down' } },
     win: { top: {}, innerHeight: 300, innerWidth: 300 },
     doc: { scrollingElement: { scrollHeight: 300, clientHeight: 300, scrollTop: 0, scrollWidth: 300, clientWidth: 300, scrollLeft: 0 } }
   });
+  await top.ready();
   await sub.ready();
-  await sub.drag([[50, 50], [50, 150]]);
-  assert.ok(sub.sent.some((m) => m.type === 'scroll-top-frame' && m.action === 'scroll-down'));
 
-  // メインフレームが gesture-scroll を受け取ってスクロールする
-  scrollCalls.length = 0;
-  t.chrome.runtime.onMessage.emit({ type: 'gesture-scroll', action: 'scroll-down' }, { id: EXT_ID }, () => {});
-  assert.deepEqual(scrollCalls, [{ left: 0, top: 640, behavior: 'smooth' }]);
+  let forwarded = 0;
+  const relayScroll = () => {
+    const msgs = sub.sent.filter((m) => m.type === 'scroll-top-frame');
+    while (forwarded < msgs.length) {
+      const m = msgs[forwarded++];
+      const payload = m.mode === 'start'
+        ? { type: 'gesture-scroll', mode: 'start', action: m.action, token: m.token }
+        : { type: 'gesture-scroll', mode: 'stop', token: m.token };
+      top.chrome.runtime.onMessage.emit(payload, { id: EXT_ID }, () => {});
+    }
+  };
+
+  // 子フレームで押下・ドラッグすると start が送られ、 トップフレームが連続スクロールする
+  sub.down(50, 50);
+  sub.move(50, 150);
+  relayScroll();
+  assert.equal(top.ctrl.scrolling, true);
+  top.stepFrame(50);
+  top.stepFrame(50);
+  assert.equal(topCalls.length, 2);
+  assert.ok(topCalls.every((c) => c.top > 0 && c.behavior === 'instant'));
+
+  // 押し続けると子フレームから延長 (keepalive) が送られる
+  const startsBefore = sub.sent.filter((m) => m.type === 'scroll-top-frame' && m.mode === 'start').length;
+  sub.stepFrame(260);
+  assert.equal(sub.sent.filter((m) => m.type === 'scroll-top-frame' && m.mode === 'start').length, startsBefore + 1);
+  relayScroll();
+  top.stepFrame(50);
+  assert.equal(topCalls.length, 3);
+
+  // 子フレームで離すと stop が送られ、 トップフレームの連続スクロールが即停止する
+  sub.up(50, 150);
+  relayScroll();
+  assert.equal(sub.ctrl.scrolling, false);
+  assert.equal(top.ctrl.scrolling, false);
+  top.stepFrame(50);
+  assert.equal(topCalls.length, 3, 'stop 後はスクロールしない');
+
+  // stop が届かなくても安全期限 (lease) 超過でトップフレームが自動停止する
+  top.chrome.runtime.onMessage.emit({ type: 'gesture-scroll', mode: 'start', action: 'scroll-down', token: 'vanished-iframe' }, { id: EXT_ID }, () => {});
+  assert.equal(top.ctrl.scrolling, true);
+  top.stepFrame(50);
+  assert.equal(topCalls.length, 4);
+  top.advance(700);
+  top.stepFrame(16);
+  assert.equal(top.ctrl.scrolling, false, '延長が途絶えたら自動で止まる');
+  assert.equal(topCalls.length, 4);
+
+  // トップフレーム上で直接右ボタン解放または Esc が来た時もリモートスクロールを即停止する
+  top.chrome.runtime.onMessage.emit({ type: 'gesture-scroll', mode: 'start', action: 'scroll-down', token: 'sub-2' }, { id: EXT_ID }, () => {});
+  assert.equal(top.ctrl.scrolling, true);
+  top.up(100, 100);
+  assert.equal(top.ctrl.scrolling, false);
 });
+
 

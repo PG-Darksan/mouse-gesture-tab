@@ -410,7 +410,7 @@
         case 'scroll-down':
         case 'scroll-left':
         case 'scroll-right':
-          // ページ内のスクロール対象判定と滑らかなスクロールは承認後にコンテンツスクリプト側で実行する
+          // スクロール操作はコンテンツスクリプト側で押下中に連続実行する
           break;
         default:
           return fail('invalid');
@@ -440,6 +440,21 @@
       const token = String(message.token || '').slice(0, 64);
       Promise.resolve()
         .then(() => chromeApi.tabs.sendMessage(tabId, { type: 'gesture-relay', token, kind: message.kind, points, at: message.at }))
+        .catch(() => {});
+    }
+
+    // スクロール不可な子フレームからの連続スクロール開始・停止要求を、 同じタブのメインフレームへ中継する
+    function relayScroll(tabId, message) {
+      const mode = message.mode;
+      if (mode !== 'start' && mode !== 'stop') return;
+      if (mode === 'start' && !C.isScrollAction(message.action)) return;
+      const token = String(message.token || '').slice(0, 64);
+      const payload =
+        mode === 'start'
+          ? { type: 'gesture-scroll', mode: 'start', action: message.action, token }
+          : { type: 'gesture-scroll', mode: 'stop', token };
+      Promise.resolve()
+        .then(() => chromeApi.tabs.sendMessage(tabId, payload, { frameId: 0 }))
         .catch(() => {});
     }
 
@@ -684,11 +699,7 @@
           return false;
         case 'scroll-top-frame':
           if (!isContentSender(sender)) return false;
-          if (C.isScrollAction(message.action)) {
-            Promise.resolve()
-              .then(() => chromeApi.tabs.sendMessage(sender.tab.id, { type: 'gesture-scroll', action: message.action }, { frameId: 0 }))
-              .catch(() => {});
-          }
+          relayScroll(sender.tab.id, message);
           sendResponse({ ok: true });
           return false;
         case 'save-settings':

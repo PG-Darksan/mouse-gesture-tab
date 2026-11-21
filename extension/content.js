@@ -1,6 +1,6 @@
 /*
- * コンテンツスクリプト: 右ボタンのドラッグを記録し、 軌跡と操作ガイドを表示し、
- * 右ボタンを離した時だけ Service Worker へ実行を要求する。
+ * コンテンツスクリプト: 右ボタンのドラッグを記録し、 軌跡と操作ガイドを表示する。
+ * スクロール操作は認識中・押下している間だけ連続実行し、 その他の操作は右ボタンを離した時に Service Worker へ実行を要求する。
  */
 (function (root) {
   'use strict';
@@ -23,7 +23,15 @@
   const RELEASE_GRACE_MS = 80;
   const OWN_RELEASE_QUIET_MS = 200;
   const EXECUTE_RETRY_DELAYS = Object.freeze([80, 200]);
-  const SCROLL_RATIO = 0.8;
+  const SCROLL_SPEED_RATIO = 1.25;
+  const SCROLL_SPEED_MIN = 320;
+  const SCROLL_SPEED_MAX = 1400;
+  const SCROLL_RAMP_MS = 120;
+  const SCROLL_RAMP_MIN = 0.5;
+  const SCROLL_MAX_DT_MS = 100;
+  const SCROLL_FALLBACK_FRAME_MS = 16;
+  const REMOTE_SCROLL_REFRESH_MS = 250;
+  const REMOTE_SCROLL_LEASE_MS = 600;
   const DISPLAY_REASONS = new Set([
     'unassigned',
     'single-tab',
@@ -365,7 +373,15 @@
     const doc = env.doc;
     const chromeApi = env.chrome;
     const now = env.now || (() => Date.now());
+    const scrollNow = env.now || (() => attempt(() => win.performance.now(), now()));
     const setTimer = env.setTimeout || ((fn, ms) => win.setTimeout(fn, ms));
+    const clearTimer = env.clearTimeout || (typeof win.clearTimeout === 'function' ? (id) => win.clearTimeout(id) : null);
+    const requestFrame =
+      env.requestAnimationFrame ||
+      (typeof win.requestAnimationFrame === 'function' ? (fn) => win.requestAnimationFrame(fn) : null);
+    const cancelFrame =
+      env.cancelAnimationFrame ||
+      (typeof win.cancelAnimationFrame === 'function' ? (id) => win.cancelAnimationFrame(id) : null);
     const cryptoObj = env.crypto || win.crypto;
     const overlay = (env.createOverlay || createDomOverlay)(win, doc);
     const version = attempt(() => chromeApi.runtime.getManifest().version, '');
@@ -377,6 +393,8 @@
     let loadingSettings = false;
     const pendingDelta = {};
     let session = null;
+    let localScroll = null;
+    let remoteScroll = null;
     let pendingGuardRelease = false;
     let lastOwnReleaseAt = 0;
     // 他のフレームで始まったドラッグの移動 (別オリジンの iframe へ入った時など)
@@ -438,9 +456,18 @@
 
     /* ---------- スクロール */
 
-    function scrollBehavior() {
-      const reduced = attempt(() => !!(win.matchMedia && win.matchMedia('(prefers-reduced-motion: reduce)').matches), false);
-      return reduced ? 'auto' : 'smooth';
+    function scheduleScrollTick(fn) {
+      if (requestFrame) return { raf: true, id: requestFrame(fn) };
+      return { raf: false, id: setTimer(fn, SCROLL_FALLBACK_FRAME_MS) };
+    }
+
+    function cancelScrollHandle(handle) {
+      if (!handle) return;
+      if (handle.raf) {
+        if (cancelFrame) attempt(() => cancelFrame(handle.id));
+      } else if (clearTimer) {
+        attempt(() => clearTimer(handle.id));
+      }
     }
 
     function parentOf(node) {
@@ -448,6 +475,16 @@
       if (node.parentElement) return node.parentElement;
       const p = node.parentNode;
       return p && p.host ? p.host : null;
+    }
+
+    function hasElementMetrics(el) {
+      return !!(
+        el &&
+        typeof el.scrollHeight === 'number' &&
+        typeof el.clientHeight === 'number' &&
+        typeof el.scrollWidth === 'number' &&
+        typeof el.clientWidth === 'number'
+      );
     }
 
     function hasScrollRoom(el, vertical, dir, rtl) {
@@ -465,15 +502,15 @@
       return dir > 0 ? el.scrollLeft < max - 1 : el.scrollLeft > 1;
     }
 
-    function canScrollContainer(el, vertical, dir) {
-      if (!el || el === doc.documentElement || el === doc.body || el === doc.scrollingElement) return false;
-      if (typeof el.scrollHeight !== 'number' || typeof el.clientHeight !== 'number') return false;
-      if (typeof el.scrollWidth !== 'number' || typeof el.clientWidth !== 'number') return false;
+    function containerScrollInfo(el, vertical, dir) {
+      if (!el || el === doc.documentElement || el === doc.body || el === doc.scrollingElement) return null;
+      if (!hasElementMetrics(el)) return null;
       const style = attempt(() => (typeof win.getComputedStyle === 'function' ? win.getComputedStyle(el) : null), null);
-      if (!style) return false;
+      if (!style) return null;
       const ov = vertical ? style.overflowY : style.overflowX;
-      if (ov !== 'auto' && ov !== 'scroll' && ov !== 'overlay') return false;
-      return hasScrollRoom(el, vertical, dir, style.direction === 'rtl');
+      if (ov !== 'auto' && ov !== 'scroll' && ov !== 'overlay') return null;
+      const rtl = style.direction === 'rtl';
+      return hasScrollRoom(el, vertical, dir, rtl) ? { rtl } : null;
     }
 
     function scrollTargetBy(target, left, top, behavior) {
@@ -498,47 +535,220 @@
       return false;
     }
 
-    function performScroll(action, startTarget, allowFallback) {
+    function resolveScrollTarget(action, startTarget, allowFallback) {
       const vertical = action === 'scroll-up' || action === 'scroll-down';
       const dir = action === 'scroll-down' || action === 'scroll-right' ? 1 : -1;
-      const behavior = scrollBehavior();
 
       // まずドラッグ開始位置の要素から親方向へスクロール可能なコンテナを探す
       let node = startTarget;
       while (node) {
-        if (canScrollContainer(node, vertical, dir)) {
-          const span = vertical ? node.clientHeight : node.clientWidth;
-          const amount = Math.max(1, Math.round(span * SCROLL_RATIO)) * dir;
-          return scrollTargetBy(node, vertical ? 0 : amount, vertical ? amount : 0, behavior);
-        }
+        const info = containerScrollInfo(node, vertical, dir);
+        if (info) return { kind: 'element', el: node, vertical, dir, rtl: info.rtl };
         node = parentOf(node);
       }
 
       // 次にフレーム全体のスクロールを試す
       const rootEl = attempt(() => doc.scrollingElement || doc.documentElement || doc.body, null);
-      const hasMetrics =
-        rootEl &&
-        typeof rootEl.scrollHeight === 'number' &&
-        typeof rootEl.clientHeight === 'number' &&
-        typeof rootEl.scrollWidth === 'number' &&
-        typeof rootEl.clientWidth === 'number';
-      if (hasMetrics) {
-        const rootStyle = attempt(() => (typeof win.getComputedStyle === 'function' ? win.getComputedStyle(rootEl) : null), null);
-        const rtl = !!(rootStyle && rootStyle.direction === 'rtl');
-        if (!hasScrollRoom(rootEl, vertical, dir, rtl)) {
-          // 子フレーム側でこれ以上スクロールできなければ、 メインフレームへ引き継ぐ
-          if (allowFallback && attempt(() => win !== win.top, false)) {
-            send({ type: 'scroll-top-frame', action }).catch(() => {});
-          }
-          return false;
+      const hasMetrics = hasElementMetrics(rootEl);
+      const rootStyle = hasMetrics ? attempt(() => (typeof win.getComputedStyle === 'function' ? win.getComputedStyle(rootEl) : null), null) : null;
+      const rtl = !!(rootStyle && rootStyle.direction === 'rtl');
+      if (hasMetrics && !hasScrollRoom(rootEl, vertical, dir, rtl)) {
+        // 子フレーム側でこれ以上スクロールできなければ、 メインフレームへ引き継ぐ
+        if (allowFallback && attempt(() => win !== win.top, false)) {
+          return { kind: 'top-frame', vertical, dir, rtl: false };
         }
       }
+      return { kind: 'window', rootEl, vertical, dir, rtl };
+    }
 
-      const viewport = vertical
-        ? (typeof win.innerHeight === 'number' && win.innerHeight > 0 ? win.innerHeight : rootEl && rootEl.clientHeight) || 600
-        : (typeof win.innerWidth === 'number' && win.innerWidth > 0 ? win.innerWidth : rootEl && rootEl.clientWidth) || 800;
-      const amount = Math.max(1, Math.round(viewport * SCROLL_RATIO)) * dir;
-      return scrollTargetBy(win, vertical ? 0 : amount, vertical ? amount : 0, behavior) || scrollTargetBy(rootEl, vertical ? 0 : amount, vertical ? amount : 0, behavior);
+    function scrollSpanOf(target) {
+      if (target.kind === 'element') {
+        const span = target.vertical ? target.el.clientHeight : target.el.clientWidth;
+        return typeof span === 'number' && span > 0 ? span : 400;
+      }
+      const rootEl = target.rootEl;
+      if (target.vertical) {
+        return (typeof win.innerHeight === 'number' && win.innerHeight > 0 ? win.innerHeight : rootEl && rootEl.clientHeight) || 600;
+      }
+      return (typeof win.innerWidth === 'number' && win.innerWidth > 0 ? win.innerWidth : rootEl && rootEl.clientWidth) || 800;
+    }
+
+    function scrollSpeedOf(target, elapsedMs) {
+      const span = scrollSpanOf(target);
+      const base = Math.min(SCROLL_SPEED_MAX, Math.max(SCROLL_SPEED_MIN, span * SCROLL_SPEED_RATIO));
+      const ratio =
+        SCROLL_RAMP_MS > 0
+          ? SCROLL_RAMP_MIN + (1 - SCROLL_RAMP_MIN) * Math.min(1, Math.max(0, elapsedMs) / SCROLL_RAMP_MS)
+          : 1;
+      return base * ratio;
+    }
+
+    function stepScrollTarget(state, dtMs) {
+      if (dtMs <= 0) return;
+      const midElapsed = state.elapsedMs + dtMs / 2;
+      state.elapsedMs += dtMs;
+      let target = state.target;
+      if (target.kind === 'element' && target.el && target.el.isConnected === false) {
+        target = resolveScrollTarget(state.action, null, false);
+        state.target = target;
+        state.carry = 0;
+      }
+      if (target.kind === 'element') {
+        if (!hasScrollRoom(target.el, target.vertical, target.dir, target.rtl)) {
+          state.carry = 0;
+          return;
+        }
+      } else if (target.kind === 'window') {
+        const rootEl = target.rootEl || attempt(() => doc.scrollingElement || doc.documentElement || doc.body, null);
+        if (rootEl && hasElementMetrics(rootEl) && !hasScrollRoom(rootEl, target.vertical, target.dir, target.rtl)) {
+          state.carry = 0;
+          return;
+        }
+      } else {
+        return;
+      }
+
+      const speed = scrollSpeedOf(target, midElapsed);
+      state.carry += speed * (dtMs / 1000) * target.dir;
+      const step = Math.trunc(state.carry);
+      if (step === 0) return;
+      state.carry -= step;
+
+      const left = target.vertical ? 0 : step;
+      const top = target.vertical ? step : 0;
+      // 連続スクロール中はページ側の scroll-behavior: smooth と競合しないよう instant で毎フレーム進める
+      if (target.kind === 'element') {
+        scrollTargetBy(target.el, left, top, 'instant');
+      } else {
+        scrollTargetBy(win, left, top, 'instant') || scrollTargetBy(target.rootEl, left, top, 'instant');
+      }
+    }
+
+    function sendTopFrameScroll(mode, action) {
+      const msg =
+        mode === 'start'
+          ? { type: 'scroll-top-frame', mode: 'start', action, token }
+          : { type: 'scroll-top-frame', mode: 'stop', token };
+      send(msg).catch(() => {});
+    }
+
+    function stopLocalScroll() {
+      const st = localScroll;
+      if (!st) return;
+      localScroll = null;
+      cancelScrollHandle(st.handle);
+      if (st.remoteActive) sendTopFrameScroll('stop');
+    }
+
+    function stopRemoteScroll(sourceToken) {
+      const st = remoteScroll;
+      if (!st) return;
+      if (sourceToken && st.source && st.source !== sourceToken) return;
+      remoteScroll = null;
+      cancelScrollHandle(st.handle);
+    }
+
+    function stopAllScroll() {
+      stopLocalScroll();
+      stopRemoteScroll();
+    }
+
+    function syncLocalScroll(s, shape) {
+      const action = shape && settings ? settings.gestures[shape] || 'none' : 'none';
+      if (!C.isScrollAction(action)) {
+        stopLocalScroll();
+        return;
+      }
+      if (localScroll && localScroll.session === s && localScroll.action === action) return;
+      stopLocalScroll();
+      const target = resolveScrollTarget(action, s.startTarget, true);
+      const ts = scrollNow();
+      const st = {
+        session: s,
+        action,
+        target,
+        lastAt: ts,
+        elapsedMs: 0,
+        carry: 0,
+        remoteActive: target.kind === 'top-frame',
+        lastRemoteAt: 0,
+        handle: null
+      };
+      localScroll = st;
+      if (st.remoteActive) {
+        st.lastRemoteAt = now();
+        sendTopFrameScroll('start', action);
+      }
+      const tick = () => {
+        if (destroyed || localScroll !== st || session !== s || s.releaseGraceActive) {
+          if (localScroll === st) stopLocalScroll();
+          return;
+        }
+        if (s.recognized && (!s.guardSentAt || now() - s.guardSentAt > REMOTE_GUARD_REFRESH_MS)) {
+          s.guardSentAt = now();
+          sendGuard(REMOTE_GUARD_MS);
+        }
+        const cur = scrollNow();
+        const dt = Math.min(Math.max(cur - st.lastAt, 0), SCROLL_MAX_DT_MS);
+        st.lastAt = cur;
+        if (st.remoteActive) {
+          if (now() - st.lastRemoteAt >= REMOTE_SCROLL_REFRESH_MS) {
+            st.lastRemoteAt = now();
+            sendTopFrameScroll('start', st.action);
+          }
+        } else {
+          stepScrollTarget(st, dt);
+        }
+        if (!destroyed && localScroll === st && session === s && !s.releaseGraceActive) {
+          st.handle = scheduleScrollTick(tick);
+        }
+      };
+      st.handle = scheduleScrollTick(tick);
+    }
+
+    function startRemoteScroll(sourceToken, action) {
+      if (destroyed || !loaded || !settings || !settings.enabled || doc.visibilityState === 'hidden') return;
+      if (!C.isScrollAction(action)) return;
+      const expiresAt = now() + REMOTE_SCROLL_LEASE_MS;
+      if (remoteScroll && remoteScroll.source === sourceToken && remoteScroll.action === action) {
+        remoteScroll.expiresAt = expiresAt;
+        return;
+      }
+      stopRemoteScroll();
+      const target = resolveScrollTarget(action, null, false);
+      const ts = scrollNow();
+      const st = {
+        source: sourceToken,
+        action,
+        target,
+        lastAt: ts,
+        elapsedMs: 0,
+        carry: 0,
+        expiresAt,
+        handle: null
+      };
+      remoteScroll = st;
+      const tick = () => {
+        if (
+          destroyed ||
+          remoteScroll !== st ||
+          !settings ||
+          !settings.enabled ||
+          doc.visibilityState === 'hidden' ||
+          now() >= st.expiresAt
+        ) {
+          if (remoteScroll === st) stopRemoteScroll();
+          return;
+        }
+        const cur = scrollNow();
+        const dt = Math.min(Math.max(cur - st.lastAt, 0), SCROLL_MAX_DT_MS);
+        st.lastAt = cur;
+        stepScrollTarget(st, dt);
+        if (!destroyed && remoteScroll === st) {
+          st.handle = scheduleScrollTick(tick);
+        }
+      };
+      st.handle = scheduleScrollTick(tick);
     }
 
     /* ---------- 設定 */
@@ -583,6 +793,7 @@
       if (!any) return;
       if (loaded) settings = C.normalizeSettings({ ...settings, ...delta });
       else Object.assign(pendingDelta, delta);
+      stopAllScroll();
       cancel('settings-changed');
     }
 
@@ -664,6 +875,7 @@
           sendGuard(REMOTE_GUARD_MS);
         }
       }
+      syncLocalScroll(s, shape);
       render();
     }
 
@@ -675,7 +887,7 @@
         shape: I18N.shapeLabel(L, shape),
         action: action === 'none' ? I18N.t(L, 'guide.unassigned') : I18N.actionLabel(L, action),
         unassigned: action === 'none',
-        hint: I18N.t(L, 'guide.hint')
+        hint: I18N.t(L, C.isScrollAction(action) ? 'guide.hint.scroll' : 'guide.hint')
       };
     }
 
@@ -698,6 +910,7 @@
       if (!s) return;
       s.releaseGraceToken += 1;
       s.releaseGraceActive = false;
+      stopLocalScroll();
       session = null;
       lastOwnReleaseAt = now();
       releaseCapture(s);
@@ -791,6 +1004,7 @@
       if (!s) return;
       s.releaseGraceToken += 1;
       s.releaseGraceActive = false;
+      stopLocalScroll();
       if (typeof x === 'number' && typeof y === 'number' && Number.isFinite(x) && Number.isFinite(y)) {
         s.path.add(x, y);
       }
@@ -807,18 +1021,17 @@
       }
       if (s.guardSentAt) sendGuard(MENU_SUPPRESS_MS);
       if (!shape) return;
-      execute(shape, s.gestureId, settings.gestures[shape] || 'none', s.startTarget, 0);
+      const action = settings.gestures[shape] || 'none';
+      // スクロール操作は押下中に連続実行しているため、 離した時には追加実行せず停止だけ行う
+      if (C.isScrollAction(action)) return;
+      execute(shape, s.gestureId, action, 0);
     }
 
-    function execute(shape, gestureId, expected, startTarget, retry) {
+    function execute(shape, gestureId, expected, retry) {
       const attemptNo = retry || 0;
       send({ type: 'execute-gesture', gesture: shape, gestureId, action: expected }).then(
         (resp) => {
-          if (destroyed || !resp) return;
-          if (resp.ok) {
-            if (C.isScrollAction(resp.action)) performScroll(resp.action, startTarget, true);
-            return;
-          }
+          if (destroyed || !resp || resp.ok) return;
           if (!settings || !settings.showFeedback || !DISPLAY_REASONS.has(resp.reason)) return;
           showNotice(messageFor(resp));
         },
@@ -831,7 +1044,7 @@
           // Service Worker のスリープ復帰直後など一時的な通信切断は同じ gestureId で再送する
           if (attemptNo < EXECUTE_RETRY_DELAYS.length) {
             setTimer(() => {
-              if (!destroyed && contextValid()) execute(shape, gestureId, expected, startTarget, attemptNo + 1);
+              if (!destroyed && contextValid()) execute(shape, gestureId, expected, attemptNo + 1);
             }, EXECUTE_RETRY_DELAYS[attemptNo]);
           }
         }
@@ -890,6 +1103,7 @@
         destroy(false);
         return;
       }
+      stopRemoteScroll();
       if (session) {
         const lostRelease = e.pointerId === session.pointerId && e.button === 2 && e.buttons === 2;
         cancel(lostRelease ? 'lost-release' : 'extra-button');
@@ -919,6 +1133,8 @@
           cancel('buttons-changed');
           return;
         }
+        // 右ボタンがすでに離されているため連続スクロールは即座に止め、 解放イベントの到着だけ待つ
+        stopLocalScroll();
         // 高負荷時などに pointerup より先に buttons=0 の pointermove が届く場合は短時間だけ解放を待つ
         if (!s.releaseGraceActive) {
           s.releaseGraceActive = true;
@@ -946,6 +1162,7 @@
       const s = session;
       if (!s || e.pointerId !== s.pointerId) {
         if (e.button === 2) {
+          stopRemoteScroll();
           noteRightRelease();
           if (!s && e.buttons === 0) relayRelease(e);
         }
@@ -969,6 +1186,7 @@
       if (!e.isTrusted) return;
       if (!session) {
         if (e.button === 2) {
+          stopRemoteScroll();
           noteRightRelease();
           if (e.buttons === 0) relayRelease(e);
         }
@@ -993,14 +1211,17 @@
     }
 
     function onKeyDown(e) {
-      if (!session || e.key !== 'Escape') return;
-      cancel('escape');
+      if (e.key !== 'Escape') return;
+      if (!session && !remoteScroll) return;
+      stopRemoteScroll();
+      if (session) cancel('escape');
       e.preventDefault();
       e.stopImmediatePropagation();
     }
 
     function onContextMenu(e) {
       if (!e.isTrusted) return;
+      if (e.buttons === 0) stopRemoteScroll();
       // Windows 等で pointerup / mouseup を取りこぼして解放時 contextmenu (buttons=0) だけ届いた場合の代替完了
       if (session && session.recognized && e.buttons === 0) finish(e.clientX, e.clientY);
       const t = now();
@@ -1015,6 +1236,7 @@
 
     function onAuxClick(e) {
       if (!e.isTrusted || e.button !== 2) return;
+      if (e.buttons === 0) stopRemoteScroll();
       // pointerup / mouseup が届かず auxclick (button=2, buttons=0) だけ届いた場合の代替完了
       if (session && e.buttons === 0) finish(e.clientX, e.clientY);
       const t = now();
@@ -1027,21 +1249,29 @@
 
     // 子要素の blur ではなく、 ウィンドウ自体のフォーカス喪失だけで中止する
     function onWindowBlur(e) {
-      if (!session || e.target !== win) return;
+      if ((!session && !remoteScroll) || e.target !== win) return;
       setTimer(() => {
-        if (session && !attempt(() => doc.hasFocus(), false)) cancel('blur');
+        if (!attempt(() => doc.hasFocus(), false)) {
+          stopRemoteScroll();
+          if (session) cancel('blur');
+        }
       }, 0);
     }
 
     function onVisibilityChange() {
-      if (doc.visibilityState === 'hidden') cancel('hidden');
+      if (doc.visibilityState === 'hidden') {
+        stopAllScroll();
+        cancel('hidden');
+      }
     }
 
     function onPageHide() {
+      stopAllScroll();
       cancel('pagehide');
     }
 
     function onFullscreenChange() {
+      stopAllScroll();
       cancel('fullscreen');
       overlay.reset();
     }
@@ -1074,7 +1304,9 @@
         return false;
       }
       if (message.type === 'gesture-scroll') {
-        if (C.isScrollAction(message.action)) performScroll(message.action, null, false);
+        if (message.token === token) return false;
+        if (message.mode === 'stop') stopRemoteScroll(message.token);
+        else if (message.mode === 'start') startRemoteScroll(message.token, message.action);
         return false;
       }
       return false;
@@ -1083,6 +1315,7 @@
     function destroy(keepNotice) {
       if (destroyed) return;
       destroyed = true;
+      stopAllScroll();
       foreign = null;
       if (session) {
         releaseCapture(session);
@@ -1138,6 +1371,9 @@
       },
       get session() {
         return session;
+      },
+      get scrolling() {
+        return !!(localScroll || remoteScroll);
       },
       get settings() {
         return settings;

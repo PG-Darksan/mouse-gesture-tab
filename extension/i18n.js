@@ -39,6 +39,7 @@
     'steps.two': '{a}動かしてから{b}',
 
     'guide.hint': '右ボタンを離すと実行 · Escで中止',
+    'guide.hint.scroll': '右ボタンを離すと停止 · Escで中止',
     'guide.unassigned': '未割り当て（離しても何もしません）',
 
     'reason.unassigned': 'このジェスチャーには操作が割り当てられていません',
@@ -156,6 +157,7 @@
     'steps.two': 'Move {a}, then {b}',
 
     'guide.hint': 'Release the right button to run · Esc to cancel',
+    'guide.hint.scroll': 'Release the right button to stop · Esc to cancel',
     'guide.unassigned': 'Not assigned (nothing happens on release)',
 
     'reason.unassigned': 'No action is assigned to this gesture',
